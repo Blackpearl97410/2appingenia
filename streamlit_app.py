@@ -334,6 +334,154 @@ def build_block_recommendations(block_name: str, insights: dict[str, str], crite
     return " | ".join(recommendations[:4])
 
 
+def extract_wf2a_dossier_criteria(uploaded_files) -> list[dict[str, str]]:
+    combined_text = aggregate_block_text(uploaded_files)
+    criteria: list[dict[str, str]] = []
+
+    date_matches = re.findall(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})\b", combined_text)
+    amount_matches = re.findall(r"\b\d[\d\s.,]{2,}\s?(?:€|euros?)\b", combined_text, flags=re.IGNORECASE)
+
+    if date_matches:
+        criteria.append({
+            "categorie": "obligatoire",
+            "domaine": "administratif",
+            "libelle": "Date de reference detectee",
+            "detail": date_matches[0],
+        })
+
+    if amount_matches:
+        criteria.append({
+            "categorie": "souhaitable",
+            "domaine": "financier",
+            "libelle": "Montant detecte dans le dossier",
+            "detail": amount_matches[0],
+        })
+
+    keyword_rules = [
+        ("eligibilite", "obligatoire", "administratif", "Condition d'eligibilite detectee"),
+        ("candidature", "obligatoire", "administratif", "Element de candidature detecte"),
+        ("budget", "souhaitable", "financier", "Element budgetaire detecte"),
+        ("planning", "souhaitable", "technique", "Element de planning detecte"),
+        ("calendrier", "souhaitable", "technique", "Element de calendrier detecte"),
+        ("piece", "obligatoire", "administratif", "Piece demandee detectee"),
+        ("obligatoire", "bloquant", "administratif", "Mention explicite d'obligation detectee"),
+    ]
+
+    for keyword, category, domain, label in keyword_rules:
+        if keyword in combined_text:
+            criteria.append({
+                "categorie": category,
+                "domaine": domain,
+                "libelle": label,
+                "detail": f"Mot-cle repere : {keyword}",
+            })
+
+    unique_criteria = []
+    seen = set()
+    for criterion in criteria:
+        key = (criterion["libelle"], criterion["detail"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_criteria.append(criterion)
+
+    return unique_criteria[:12]
+
+
+def render_wf2a_dossier_section(dossier_files) -> None:
+    st.subheader("WF2a local - Extraction criteres dossier")
+
+    if not dossier_files:
+        st.info("Aucun document dossier charge pour lancer l'extraction WF2a locale.")
+        return
+
+    criteria = extract_wf2a_dossier_criteria(dossier_files)
+
+    if not criteria:
+        st.warning("Aucun critere explicite n'a ete detecte dans le bloc dossier.")
+        return
+
+    st.write(f"{len(criteria)} critere(s) detecte(s)")
+    for index, criterion in enumerate(criteria, start=1):
+        st.markdown(
+            f"**{index}. {criterion['libelle']}**  \n"
+            f"Categorie : `{criterion['categorie']}`  \n"
+            f"Domaine : `{criterion['domaine']}`  \n"
+            f"Detail : {criterion['detail']}"
+        )
+
+
+def extract_wf2b_client_profile(client_files) -> dict[str, str]:
+    text = aggregate_block_text(client_files)
+
+    legal_forms = ["association", "sas", "sarl", "ei", "micro-entreprise", "entreprise individuelle"]
+    detected_legal_form = next((form for form in legal_forms if form in text), "Non detectee")
+
+    siret_match = re.search(r"\b\d{14}\b", text)
+    email_match = re.search(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b", text)
+    phone_match = re.search(r"(\+262|0)[0-9\s.-]{8,}", text)
+
+    activity_keywords = [
+        "formation", "culture", "musique", "audiovisuel", "numerique",
+        "spectacle", "production", "association", "studio",
+    ]
+    detected_activities = [keyword for keyword in activity_keywords if keyword in text]
+
+    return {
+        "forme_juridique": detected_legal_form,
+        "siret": siret_match.group(0) if siret_match else "Non detecte",
+        "email": email_match.group(0) if email_match else "Non detecte",
+        "telephone": phone_match.group(0).strip() if phone_match else "Non detecte",
+        "activites_detectees": ", ".join(detected_activities[:6]) if detected_activities else "Aucune",
+    }
+
+
+def extract_wf2b_project_data(project_files) -> dict[str, str]:
+    text = aggregate_block_text(project_files)
+
+    amount_match = re.search(r"\b\d[\d\s.,]{2,}\s?(?:€|euros?)\b", text, flags=re.IGNORECASE)
+    date_matches = re.findall(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})\b", text)
+
+    objective_keywords = [
+        "objectif", "public", "beneficiaire", "planning", "calendrier",
+        "budget", "financement", "action", "atelier", "accompagnement",
+    ]
+    detected_objectives = [keyword for keyword in objective_keywords if keyword in text]
+
+    project_title = "Non detecte"
+    for line in [line.strip() for line in text.splitlines() if line.strip()]:
+        if len(line) > 8:
+            project_title = line[:120]
+            break
+
+    return {
+        "titre_projet": project_title,
+        "montant_detecte": amount_match.group(0) if amount_match else "Non detecte",
+        "dates_detectees": ", ".join(date_matches[:5]) if date_matches else "Aucune",
+        "elements_detectes": ", ".join(detected_objectives[:8]) if detected_objectives else "Aucun",
+    }
+
+
+def render_wf2b_section(client_files, project_files) -> None:
+    st.subheader("WF2b local - Profil client et donnees projet")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### Profil client")
+        if not client_files:
+            st.info("Aucun document client charge pour l'extraction WF2b locale.")
+        else:
+            render_metadata(extract_wf2b_client_profile(client_files))
+
+    with col2:
+        st.markdown("### Donnees projet")
+        if not project_files:
+            st.info("Aucun document projet charge pour l'extraction WF2b locale.")
+        else:
+            render_metadata(extract_wf2b_project_data(project_files))
+
+
 def collect_block_insights(uploaded_files) -> dict[str, str]:
     dates: dict[str, set[str]] = {}
     amounts: dict[str, set[str]] = {}
@@ -1039,6 +1187,13 @@ def render_upload() -> None:
     render_global_summary(summary_map)
     st.divider()
     render_cross_block_summary(build_global_cross_block_summary(block_files_map))
+    st.divider()
+    render_wf2a_dossier_section(block_files_map["Documents dossier"])
+    st.divider()
+    render_wf2b_section(
+        block_files_map["Documents client"],
+        block_files_map["Documents projet"],
+    )
 
 
 def main() -> None:
