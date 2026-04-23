@@ -91,6 +91,77 @@ def render_metadata(metadata: dict[str, str]) -> None:
         cols[index % 2].write(f"**{label}** : {value}")
 
 
+def collect_block_insights(uploaded_files) -> dict[str, str]:
+    dates = set()
+    amounts = set()
+    organizations = set()
+    keywords = set()
+
+    for uploaded_file in uploaded_files:
+        suffix = Path(uploaded_file.name).suffix.lower() or "inconnu"
+
+        if suffix in {".txt", ".md"}:
+            text_content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
+            metadata = extract_text_metadata(text_content, uploaded_file.name)
+            detected_date = metadata.get("Date detectee")
+            detected_amount = metadata.get("Montant detecte")
+            detected_org = metadata.get("Organisme detecte")
+            if detected_date and detected_date != "Non detectee":
+                dates.add(detected_date)
+            if detected_amount and detected_amount != "Non detecte":
+                amounts.add(detected_amount)
+            if detected_org and detected_org != "Non detecte":
+                organizations.add(detected_org)
+
+            words = re.findall(r"\b[a-zA-ZÀ-ÿ][a-zA-ZÀ-ÿ-]{3,}\b", text_content.lower())
+            keywords.update(word for word in words[:20] if len(word) > 4)
+
+        elif suffix == ".docx":
+            document = Document(uploaded_file)
+            text_content = "\n\n".join(
+                p.text.strip() for p in document.paragraphs if p.text.strip()
+            )
+            metadata = extract_text_metadata(text_content, uploaded_file.name)
+            detected_date = metadata.get("Date detectee")
+            detected_amount = metadata.get("Montant detecte")
+            detected_org = metadata.get("Organisme detecte")
+            if detected_date and detected_date != "Non detectee":
+                dates.add(detected_date)
+            if detected_amount and detected_amount != "Non detecte":
+                amounts.add(detected_amount)
+            if detected_org and detected_org != "Non detecte":
+                organizations.add(detected_org)
+
+        elif suffix == ".pdf":
+            reader = PdfReader(uploaded_file)
+            pdf_text_parts = []
+            for page in reader.pages:
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    pdf_text_parts.append(page_text.strip())
+            pdf_text = "\n\n".join(pdf_text_parts)
+            metadata = extract_text_metadata(pdf_text, uploaded_file.name)
+            detected_date = metadata.get("Date detectee")
+            detected_amount = metadata.get("Montant detecte")
+            detected_org = metadata.get("Organisme detecte")
+            if detected_date and detected_date != "Non detectee":
+                dates.add(detected_date)
+            if detected_amount and detected_amount != "Non detecte":
+                amounts.add(detected_amount)
+            if detected_org and detected_org != "Non detecte":
+                organizations.add(detected_org)
+
+        elif suffix in {".csv", ".xlsx"}:
+            keywords.add("tableau")
+
+    return {
+        "Dates reperees": ", ".join(sorted(dates)) if dates else "Aucune",
+        "Montants reperes": ", ".join(sorted(amounts)) if amounts else "Aucun",
+        "Organismes reperes": ", ".join(sorted(organizations)) if organizations else "Aucun",
+        "Mots-cles simples": ", ".join(sorted(list(keywords))[:12]) if keywords else "Aucun",
+    }
+
+
 def dataframe_to_markdown(dataframe: pd.DataFrame, title: str) -> str:
     preview_df = dataframe.head(20).fillna("")
     table_markdown = preview_df.to_markdown(index=False)
@@ -134,6 +205,98 @@ def render_global_summary(summary_map: dict[str, list[dict[str, str]]]) -> None:
             st.success(f"{block_name} : {len(infos)} document(s)")
             for info in infos:
                 st.write(f"- {info['Nom']} | {info['Type']} | {info['Taille']}")
+
+
+def assess_block_completeness(uploaded_files) -> dict[str, str]:
+    if not uploaded_files:
+        return {
+            "Statut bloc": "vide",
+            "Niveau": "0/3",
+            "Commentaire": "Aucun document n'a ete charge dans ce bloc.",
+        }
+
+    suffixes = {
+        Path(uploaded_file.name).suffix.lower() or "inconnu"
+        for uploaded_file in uploaded_files
+    }
+    file_count = len(uploaded_files)
+
+    if file_count >= 2 and len(suffixes) >= 2:
+        return {
+            "Statut bloc": "suffisant",
+            "Niveau": "3/3",
+            "Commentaire": "Le bloc contient plusieurs pieces et au moins deux formats ou types apparents.",
+        }
+
+    if file_count >= 1:
+        return {
+            "Statut bloc": "partiel",
+            "Niveau": "2/3",
+            "Commentaire": "Le bloc contient deja des pieces, mais semble encore incomplet pour une analyse plus fiable.",
+        }
+
+    return {
+        "Statut bloc": "vide",
+        "Niveau": "0/3",
+        "Commentaire": "Aucun document n'a ete charge dans ce bloc.",
+    }
+
+
+def render_block_summary(title: str, uploaded_files) -> None:
+    st.markdown(f"## Synthese du bloc : {title}")
+
+    type_counts: dict[str, int] = {}
+    total_size = 0
+    for uploaded_file in uploaded_files:
+        suffix = Path(uploaded_file.name).suffix.lower() or "inconnu"
+        type_counts[suffix] = type_counts.get(suffix, 0) + 1
+        total_size += uploaded_file.size
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Documents", str(len(uploaded_files)))
+    col2.metric("Types detectes", str(len(type_counts)))
+    col3.metric("Taille totale", f"{total_size} octets")
+
+    st.write(
+        "Repartition : "
+        + ", ".join(f"`{file_type}` x {count}" for file_type, count in sorted(type_counts.items()))
+    )
+    render_metadata(assess_block_completeness(uploaded_files))
+    render_metadata(collect_block_insights(uploaded_files))
+
+
+def build_block_normalized_text(title: str, uploaded_files) -> str:
+    chunks = [f"# {title}"]
+    for uploaded_file in uploaded_files:
+        suffix = Path(uploaded_file.name).suffix.lower() or "inconnu"
+        chunks.append(f"## DOCUMENT: {uploaded_file.name}")
+        chunks.append(f"Type: {suffix}")
+
+        if suffix in {".txt", ".md"}:
+            text_content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
+            chunks.append(text_content[:10000] or "[contenu vide]")
+        elif suffix == ".csv":
+            dataframe = pd.read_csv(uploaded_file)
+            chunks.append(dataframe_to_markdown(dataframe, uploaded_file.name))
+        elif suffix == ".xlsx":
+            workbook = pd.read_excel(uploaded_file, sheet_name=None)
+            for sheet_name, sheet_df in workbook.items():
+                chunks.append(dataframe_to_markdown(sheet_df, f"{uploaded_file.name} - {sheet_name}"))
+        elif suffix == ".pdf":
+            reader = PdfReader(uploaded_file)
+            pages_text = []
+            for page in reader.pages:
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    pages_text.append(page_text.strip())
+            chunks.append("\n\n".join(pages_text)[:10000] or "[aucun texte exploitable]")
+        elif suffix == ".docx":
+            document = Document(uploaded_file)
+            chunks.append(docx_to_markdown(document)[:10000] or "[aucun texte exploitable]")
+        else:
+            chunks.append("[type non pris en charge]")
+
+    return "\n\n".join(chunks)
 
 
 def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -> None:
@@ -322,6 +485,11 @@ def render_upload_block(title: str, help_text: str, uploader_key: str) -> list[d
         summaries.append(build_upload_summary(uploaded_file))
         if index < len(uploaded_files):
             st.divider()
+
+    st.divider()
+    render_block_summary(title, uploaded_files)
+    block_normalized_text = build_block_normalized_text(title, uploaded_files)
+    render_normalized_text(block_normalized_text, title.replace(" ", "_").lower())
 
     return summaries
 
