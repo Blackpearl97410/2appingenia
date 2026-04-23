@@ -160,6 +160,43 @@ def format_detected_values(store: dict[str, set[str]]) -> str:
     )
 
 
+def choose_priority_value(block_candidates: dict[str, str], priority_order: list[str]) -> str:
+    for block_name in priority_order:
+        value = block_candidates.get(block_name)
+        if value and value not in {"Aucun", "Aucune"}:
+            return f"{value} ({block_name})"
+    return "Aucun"
+
+
+def compute_global_prescore(
+    available_blocks: list[str],
+    block_statuses: dict[str, str],
+    organizations: dict[str, str],
+    dates: dict[str, str],
+    amounts: dict[str, str],
+    issues: list[str],
+) -> tuple[str, str]:
+    score = 0
+
+    score += len(available_blocks) * 20
+    score += sum(10 for status in block_statuses.values() if status == "suffisant")
+    score += min(len(organizations), 3) * 10
+    score += min(len(dates), 3) * 8
+    score += min(len(amounts), 3) * 8
+    score -= min(len(issues), 5) * 8
+
+    score = max(0, min(score, 100))
+
+    if score >= 75:
+        label = "bon"
+    elif score >= 45:
+        label = "moyen"
+    else:
+        label = "faible"
+
+    return label, f"{score}/100"
+
+
 def extract_keywords_from_text(text: str) -> list[str]:
     words = re.findall(r"\b[a-zA-ZÀ-ÿ][a-zA-ZÀ-ÿ-]{3,}\b", text.lower())
     filtered = []
@@ -321,6 +358,10 @@ def render_global_summary(summary_map: dict[str, list[dict[str, str]]]) -> None:
 
 
 def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[str, str]:
+    dossier_priority = ["Documents dossier", "Documents projet", "Documents client"]
+    client_priority = ["Documents client", "Documents projet", "Documents dossier"]
+    project_priority = ["Documents projet", "Documents dossier", "Documents client"]
+
     available_blocks = [name for name, files in block_files_map.items() if files]
     missing_blocks = [name for name, files in block_files_map.items() if not files]
 
@@ -401,11 +442,24 @@ def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[s
     else:
         issues_text = " | ".join(issues[:8])
 
+    prescore_label, prescore_value = compute_global_prescore(
+        available_blocks=available_blocks,
+        block_statuses=block_statuses,
+        organizations=organizations,
+        dates=dates,
+        amounts=amounts,
+        issues=issues,
+    )
+
     return {
         "Etat global": readiness,
+        "Pre-score global": f"{prescore_label} ({prescore_value})",
         "Blocs disponibles": ", ".join(available_blocks) if available_blocks else "Aucun",
         "Blocs manquants": ", ".join(missing_blocks) if missing_blocks else "Aucun",
         "Statut des blocs": " | ".join(f"{k}: {v}" for k, v in block_statuses.items()),
+        "Date prioritaire": choose_priority_value(dates, dossier_priority),
+        "Organisme prioritaire": choose_priority_value(organizations, client_priority),
+        "Montant prioritaire": choose_priority_value(amounts, project_priority),
         "Organismes par bloc": " | ".join(f"{k}: {v}" for k, v in organizations.items()) if organizations else "Aucun",
         "Dates par bloc": " | ".join(f"{k}: {v}" for k, v in dates.items()) if dates else "Aucune",
         "Montants par bloc": " | ".join(f"{k}: {v}" for k, v in amounts.items()) if amounts else "Aucun",
