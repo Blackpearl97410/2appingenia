@@ -520,11 +520,84 @@ def build_comparable_bridge(dossier_files, client_files, project_files) -> dict[
     return bridge
 
 
-def render_bridge_section(dossier_files, client_files, project_files) -> None:
-    st.subheader("Pont local - Donnees comparables WF2a/WF2b")
+def apply_manual_completion(bridge: dict[str, str], overrides: dict[str, str]) -> dict[str, str]:
+    completed = dict(bridge)
+    for key, value in overrides.items():
+        cleaned = value.strip()
+        if cleaned:
+            completed[key] = cleaned
+    return completed
 
-    bridge = build_comparable_bridge(dossier_files, client_files, project_files)
+
+def render_manual_completion_widget(bridge: dict[str, str]) -> dict[str, str]:
+    st.markdown("### Completion manuelle des donnees manquantes")
+    st.caption("Tu peux corriger ou completer les champs ci-dessous. Les valeurs saisies seront utilisees pour le WF3 local.")
+
+    col1, col2 = st.columns(2)
+    overrides = {}
+
+    with col1:
+        overrides["type_structure_requise"] = st.text_input(
+            "Type de structure requise",
+            value="" if bridge.get("type_structure_requise") == "A verifier" else bridge.get("type_structure_requise", ""),
+            key="manual_type_structure_requise",
+        )
+        overrides["date_limite_dossier"] = st.text_input(
+            "Date limite dossier",
+            value="" if bridge.get("date_limite_dossier") == "Aucune" else bridge.get("date_limite_dossier", ""),
+            key="manual_date_limite_dossier",
+        )
+        overrides["montant_dossier"] = st.text_input(
+            "Montant dossier",
+            value="" if bridge.get("montant_dossier") == "Aucun" else bridge.get("montant_dossier", ""),
+            key="manual_montant_dossier",
+        )
+        overrides["conditions_dossier"] = st.text_area(
+            "Conditions dossier",
+            value="" if bridge.get("conditions_dossier") == "Aucune" else bridge.get("conditions_dossier", ""),
+            key="manual_conditions_dossier",
+            height=120,
+        )
+
+    with col2:
+        overrides["type_structure_client"] = st.text_input(
+            "Type de structure client",
+            value="" if bridge.get("type_structure_client") == "Non detectee" else bridge.get("type_structure_client", ""),
+            key="manual_type_structure_client",
+        )
+        overrides["identite_client"] = st.text_input(
+            "Identite / activite client",
+            value="" if bridge.get("identite_client") == "Aucune" else bridge.get("identite_client", ""),
+            key="manual_identite_client",
+        )
+        overrides["montant_projet"] = st.text_input(
+            "Montant projet",
+            value="" if bridge.get("montant_projet") == "Non detecte" else bridge.get("montant_projet", ""),
+            key="manual_montant_projet",
+        )
+        overrides["dates_projet"] = st.text_input(
+            "Dates projet",
+            value="" if bridge.get("dates_projet") == "Aucune" else bridge.get("dates_projet", ""),
+            key="manual_dates_projet",
+        )
+        overrides["elements_projet"] = st.text_area(
+            "Elements projet",
+            value="" if bridge.get("elements_projet") == "Aucun" else bridge.get("elements_projet", ""),
+            key="manual_elements_projet",
+            height=120,
+        )
+
+    return apply_manual_completion(bridge, overrides)
+
+
+def render_bridge_section(bridge: dict[str, str]) -> dict[str, str]:
+    st.subheader("Pont local - Donnees comparables WF2a/WF2b")
     render_metadata(bridge)
+    st.divider()
+    completed_bridge = render_manual_completion_widget(bridge)
+    st.markdown("### Pont apres completion manuelle")
+    render_metadata(completed_bridge)
+    return completed_bridge
 
 
 def compute_wf3_local(bridge: dict[str, str]) -> dict[str, str]:
@@ -601,14 +674,15 @@ def compute_wf3_local(bridge: dict[str, str]) -> dict[str, str]:
     }
 
 
-def render_wf3_section(dossier_files, client_files, project_files) -> None:
+def render_wf3_section(dossier_files, client_files, project_files, bridge: dict[str, str] | None = None) -> None:
     st.subheader("WF3 local - Matching dossier / client / projet")
 
     if not dossier_files or not client_files or not project_files:
         st.info("Le WF3 local demande des documents dans les 3 blocs : dossier, client et projet.")
         return
 
-    bridge = build_comparable_bridge(dossier_files, client_files, project_files)
+    if bridge is None:
+        bridge = build_comparable_bridge(dossier_files, client_files, project_files)
     wf3 = compute_wf3_local(bridge)
 
     col1, col2 = st.columns(2)
