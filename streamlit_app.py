@@ -130,73 +130,139 @@ def render_metadata(metadata: dict[str, str]) -> None:
         cols[index % 2].write(f"**{label}** : {value}")
 
 
+def normalize_detected_value(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def add_detected_value(store: dict[str, set[str]], key: str, value: str, source_name: str) -> None:
+    normalized = normalize_detected_value(value)
+    if not normalized or normalized in {"Non detectee", "Non detecte", "Aucun", "Aucune"}:
+        return
+    store.setdefault(normalized, set()).add(source_name)
+
+
+def format_detected_values(store: dict[str, set[str]]) -> str:
+    if not store:
+        return "Aucun"
+    items = sorted(
+        store.items(),
+        key=lambda item: (-len(item[1]), item[0].lower()),
+    )
+    return " | ".join(
+        f"{value} ({len(sources)} doc)" if len(sources) == 1 else f"{value} ({len(sources)} docs)"
+        for value, sources in items[:8]
+    )
+
+
+def extract_keywords_from_text(text: str) -> list[str]:
+    words = re.findall(r"\b[a-zA-ZÀ-ÿ][a-zA-ZÀ-ÿ-]{3,}\b", text.lower())
+    filtered = []
+    seen = set()
+    stop_words = {
+        "dans", "avec", "pour", "cette", "document", "documents", "projet",
+        "dossier", "client", "bloc", "fichier", "charge", "titre", "type",
+        "date", "montant", "organisme", "texte", "tableau", "feuille",
+    }
+    for word in words:
+        if len(word) <= 4 or word in stop_words or word in seen:
+            continue
+        seen.add(word)
+        filtered.append(word)
+        if len(filtered) >= 20:
+            break
+    return filtered
+
+
 def collect_block_insights(uploaded_files) -> dict[str, str]:
-    dates = set()
-    amounts = set()
-    organizations = set()
-    keywords = set()
+    dates: dict[str, set[str]] = {}
+    amounts: dict[str, set[str]] = {}
+    organizations: dict[str, set[str]] = {}
+    keywords: dict[str, set[str]] = {}
+    provenances: list[str] = []
 
     for uploaded_file in uploaded_files:
         suffix = get_uploaded_suffix(uploaded_file)
         file_bytes = get_uploaded_bytes(uploaded_file)
+        source_name = uploaded_file.name
+        local_findings = []
 
         if suffix in {".txt", ".md"}:
             text_content = parse_text_bytes(file_bytes)
             metadata = extract_text_metadata(text_content, uploaded_file.name)
-            detected_date = metadata.get("Date detectee")
-            detected_amount = metadata.get("Montant detecte")
-            detected_org = metadata.get("Organisme detecte")
-            if detected_date and detected_date != "Non detectee":
-                dates.add(detected_date)
-            if detected_amount and detected_amount != "Non detecte":
-                amounts.add(detected_amount)
-            if detected_org and detected_org != "Non detecte":
-                organizations.add(detected_org)
-
-            words = re.findall(r"\b[a-zA-ZÀ-ÿ][a-zA-ZÀ-ÿ-]{3,}\b", text_content.lower())
-            keywords.update(word for word in words[:20] if len(word) > 4)
+            detected_date = metadata.get("Date detectee", "")
+            detected_amount = metadata.get("Montant detecte", "")
+            detected_org = metadata.get("Organisme detecte", "")
+            add_detected_value(dates, "date", detected_date, source_name)
+            add_detected_value(amounts, "amount", detected_amount, source_name)
+            add_detected_value(organizations, "org", detected_org, source_name)
+            if detected_date not in {"", "Non detectee"}:
+                local_findings.append(f"date {detected_date}")
+            if detected_amount not in {"", "Non detecte"}:
+                local_findings.append(f"montant {detected_amount}")
+            if detected_org not in {"", "Non detecte"}:
+                local_findings.append(f"organisme {detected_org}")
+            for word in extract_keywords_from_text(text_content):
+                add_detected_value(keywords, "keyword", word, source_name)
 
         elif suffix == ".docx":
             text_content, _, _ = parse_docx_bytes(file_bytes)
             metadata = extract_text_metadata(text_content, uploaded_file.name)
-            detected_date = metadata.get("Date detectee")
-            detected_amount = metadata.get("Montant detecte")
-            detected_org = metadata.get("Organisme detecte")
-            if detected_date and detected_date != "Non detectee":
-                dates.add(detected_date)
-            if detected_amount and detected_amount != "Non detecte":
-                amounts.add(detected_amount)
-            if detected_org and detected_org != "Non detecte":
-                organizations.add(detected_org)
+            detected_date = metadata.get("Date detectee", "")
+            detected_amount = metadata.get("Montant detecte", "")
+            detected_org = metadata.get("Organisme detecte", "")
+            add_detected_value(dates, "date", detected_date, source_name)
+            add_detected_value(amounts, "amount", detected_amount, source_name)
+            add_detected_value(organizations, "org", detected_org, source_name)
+            if detected_date not in {"", "Non detectee"}:
+                local_findings.append(f"date {detected_date}")
+            if detected_amount not in {"", "Non detecte"}:
+                local_findings.append(f"montant {detected_amount}")
+            if detected_org not in {"", "Non detecte"}:
+                local_findings.append(f"organisme {detected_org}")
+            for word in extract_keywords_from_text(text_content):
+                add_detected_value(keywords, "keyword", word, source_name)
 
         elif suffix == ".pdf":
             pdf_text, _, _ = parse_pdf_bytes(file_bytes)
             metadata = extract_text_metadata(pdf_text, uploaded_file.name)
-            detected_date = metadata.get("Date detectee")
-            detected_amount = metadata.get("Montant detecte")
-            detected_org = metadata.get("Organisme detecte")
-            if detected_date and detected_date != "Non detectee":
-                dates.add(detected_date)
-            if detected_amount and detected_amount != "Non detecte":
-                amounts.add(detected_amount)
-            if detected_org and detected_org != "Non detecte":
-                organizations.add(detected_org)
+            detected_date = metadata.get("Date detectee", "")
+            detected_amount = metadata.get("Montant detecte", "")
+            detected_org = metadata.get("Organisme detecte", "")
+            add_detected_value(dates, "date", detected_date, source_name)
+            add_detected_value(amounts, "amount", detected_amount, source_name)
+            add_detected_value(organizations, "org", detected_org, source_name)
+            if detected_date not in {"", "Non detectee"}:
+                local_findings.append(f"date {detected_date}")
+            if detected_amount not in {"", "Non detecte"}:
+                local_findings.append(f"montant {detected_amount}")
+            if detected_org not in {"", "Non detecte"}:
+                local_findings.append(f"organisme {detected_org}")
+            for word in extract_keywords_from_text(pdf_text):
+                add_detected_value(keywords, "keyword", word, source_name)
 
         elif suffix == ".csv":
             dataframe = parse_csv_bytes(file_bytes)
-            keywords.add("tableau")
-            keywords.update(str(col).lower() for col in list(dataframe.columns)[:8])
+            add_detected_value(keywords, "keyword", "tableau", source_name)
+            for col in list(dataframe.columns)[:8]:
+                add_detected_value(keywords, "keyword", str(col).lower(), source_name)
+            local_findings.append(f"{len(dataframe.columns)} colonnes")
         elif suffix == ".xlsx":
             workbook = parse_excel_bytes(file_bytes)
-            keywords.add("tableau")
+            add_detected_value(keywords, "keyword", "tableau", source_name)
             for sheet_df in workbook.values():
-                keywords.update(str(col).lower() for col in list(sheet_df.columns)[:5])
+                for col in list(sheet_df.columns)[:5]:
+                    add_detected_value(keywords, "keyword", str(col).lower(), source_name)
+            local_findings.append(f"{len(workbook)} feuille(s)")
+
+        if local_findings:
+            provenances.append(f"{source_name} -> " + ", ".join(local_findings[:4]))
 
     return {
-        "Dates reperees": ", ".join(sorted(dates)) if dates else "Aucune",
-        "Montants reperes": ", ".join(sorted(amounts)) if amounts else "Aucun",
-        "Organismes reperes": ", ".join(sorted(organizations)) if organizations else "Aucun",
-        "Mots-cles simples": ", ".join(sorted(list(keywords))[:12]) if keywords else "Aucun",
+        "Dates reperees": format_detected_values(dates),
+        "Montants reperes": format_detected_values(amounts),
+        "Organismes reperes": format_detected_values(organizations),
+        "Mots-cles simples": format_detected_values(keywords),
+        "Provenance synthese": " | ".join(provenances[:6]) if provenances else "Aucune",
     }
 
 
