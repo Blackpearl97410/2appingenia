@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from docx import Document
 
 
 ROOT_DIR = Path(__file__).parent
@@ -13,6 +14,19 @@ def load_demo_data() -> pd.DataFrame:
     if not SAMPLE_CSV.exists():
         return pd.DataFrame()
     return pd.read_csv(SAMPLE_CSV)
+
+
+def docx_to_markdown(document: Document) -> str:
+    blocks = []
+    for paragraph in document.paragraphs:
+        text = paragraph.text.strip()
+        if not text:
+            continue
+        if paragraph.style and "heading" in paragraph.style.name.lower():
+            blocks.append(f"## {text}")
+        else:
+            blocks.append(text)
+    return "\n\n".join(blocks)
 
 
 def render_home() -> None:
@@ -105,8 +119,28 @@ def render_upload() -> None:
         return
 
     if suffix == ".xlsx":
-        st.info("Le fichier Excel est bien recu. La lecture detaillee viendra dans l'etape suivante.")
-        st.write("Etape suivante : lire les feuilles et afficher un apercu.")
+        workbook = pd.read_excel(uploaded_file, sheet_name=None)
+        sheet_names = list(workbook.keys())
+
+        st.markdown("### Feuilles detectees")
+        st.write(", ".join(f"`{name}`" for name in sheet_names))
+
+        selected_sheet = st.selectbox("Choisir une feuille", sheet_names)
+        selected_df = workbook[selected_sheet]
+        csv_content = selected_df.to_csv(index=False)
+
+        st.markdown("### Apercu Excel")
+        st.dataframe(selected_df, use_container_width=True)
+        st.write(f"Lignes : `{len(selected_df)}`")
+        st.write(f"Colonnes : `{len(selected_df.columns)}`")
+        st.markdown("### Conversion CSV")
+        st.text_area("CSV genere", csv_content[:5000], height=220)
+        st.download_button(
+            "Telecharger la feuille en CSV",
+            data=csv_content,
+            file_name=f"{Path(uploaded_file.name).stem}_{selected_sheet}.csv",
+            mime="text/csv",
+        )
         return
 
     if suffix == ".pdf":
@@ -115,8 +149,26 @@ def render_upload() -> None:
         return
 
     if suffix == ".docx":
-        st.info("Le document Word est bien recu. La lecture du contenu viendra ensuite.")
-        st.write("Etape suivante : extraire le texte du DOCX.")
+        document = Document(uploaded_file)
+        paragraphs = [p.text.strip() for p in document.paragraphs if p.text.strip()]
+        text_content = "\n\n".join(paragraphs)
+        markdown_content = docx_to_markdown(document)
+
+        if not text_content:
+            st.warning("Le document DOCX a ete charge, mais aucun texte exploitable n'a ete trouve.")
+            return
+
+        st.markdown("### Apercu DOCX")
+        st.text_area("Texte detecte", text_content[:5000], height=300)
+        st.write(f"Paragraphes detectes : `{len(paragraphs)}`")
+        st.markdown("### Conversion Markdown")
+        st.text_area("Markdown genere", markdown_content[:5000], height=260)
+        st.download_button(
+            "Telecharger en Markdown",
+            data=markdown_content,
+            file_name=f"{Path(uploaded_file.name).stem}.md",
+            mime="text/markdown",
+        )
         return
 
     st.write("Etape suivante : lecture du contenu et extraction de texte.")
