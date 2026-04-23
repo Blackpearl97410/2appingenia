@@ -482,6 +482,51 @@ def render_wf2b_section(client_files, project_files) -> None:
             render_metadata(extract_wf2b_project_data(project_files))
 
 
+def build_comparable_bridge(dossier_files, client_files, project_files) -> dict[str, str]:
+    dossier_criteria = extract_wf2a_dossier_criteria(dossier_files) if dossier_files else []
+    client_profile = extract_wf2b_client_profile(client_files) if client_files else {}
+    project_data = extract_wf2b_project_data(project_files) if project_files else {}
+
+    bridge = {
+        "type_structure_requise": "A verifier",
+        "date_limite_dossier": "Aucune",
+        "montant_dossier": "Aucun",
+        "conditions_dossier": "Aucune",
+        "type_structure_client": client_profile.get("forme_juridique", "Non detectee"),
+        "identite_client": client_profile.get("activites_detectees", "Aucune"),
+        "montant_projet": project_data.get("montant_detecte", "Non detecte"),
+        "dates_projet": project_data.get("dates_detectees", "Aucune"),
+        "elements_projet": project_data.get("elements_detectes", "Aucun"),
+    }
+
+    extracted_conditions = []
+    for criterion in dossier_criteria:
+        label = criterion.get("libelle", "")
+        detail = criterion.get("detail", "")
+        category = criterion.get("categorie", "")
+
+        if "date" in label.lower() and bridge["date_limite_dossier"] == "Aucune":
+            bridge["date_limite_dossier"] = detail
+        if "montant" in label.lower() and bridge["montant_dossier"] == "Aucun":
+            bridge["montant_dossier"] = detail
+        if category in {"obligatoire", "bloquant"}:
+            extracted_conditions.append(label)
+        if "association" in detail.lower():
+            bridge["type_structure_requise"] = "association"
+
+    if extracted_conditions:
+        bridge["conditions_dossier"] = " | ".join(extracted_conditions[:6])
+
+    return bridge
+
+
+def render_bridge_section(dossier_files, client_files, project_files) -> None:
+    st.subheader("Pont local - Donnees comparables WF2a/WF2b")
+
+    bridge = build_comparable_bridge(dossier_files, client_files, project_files)
+    render_metadata(bridge)
+
+
 def collect_block_insights(uploaded_files) -> dict[str, str]:
     dates: dict[str, set[str]] = {}
     amounts: dict[str, set[str]] = {}
@@ -1191,6 +1236,12 @@ def render_upload() -> None:
     render_wf2a_dossier_section(block_files_map["Documents dossier"])
     st.divider()
     render_wf2b_section(
+        block_files_map["Documents client"],
+        block_files_map["Documents projet"],
+    )
+    st.divider()
+    render_bridge_section(
+        block_files_map["Documents dossier"],
         block_files_map["Documents client"],
         block_files_map["Documents projet"],
     )
