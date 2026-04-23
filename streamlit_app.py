@@ -406,6 +406,13 @@ def dataframe_to_markdown(dataframe: pd.DataFrame, title: str) -> str:
     return f"## {title}\n\n{table_markdown}"
 
 
+def workbook_to_markdown(workbook: dict[str, pd.DataFrame], title: str) -> str:
+    sections = [f"# {title}"]
+    for sheet_name, sheet_df in workbook.items():
+        sections.append(dataframe_to_markdown(sheet_df, sheet_name))
+    return "\n\n".join(sections)
+
+
 def render_normalized_text(content: str, filename: str) -> None:
     st.markdown("### Source normalisee")
     st.text_area("Contenu normalise", content[:5000], height=260)
@@ -725,7 +732,7 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
             file_name=f"{Path(uploaded_file.name).stem}_{selected_sheet}.csv",
             mime="text/csv",
         )
-        normalized_text = dataframe_to_markdown(selected_df, f"{uploaded_file.name} - {selected_sheet}")
+        normalized_text = workbook_to_markdown(workbook, uploaded_file.name)
         render_normalized_text(normalized_text, uploaded_file.name)
         return
 
