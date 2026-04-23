@@ -1,4 +1,2 @@
-import streamlit as st
-
-st.title("AAP Ingenia")
-st.write("Test OK")
+streamlit>=1.44,<2
+pandas>=2.2,<3
