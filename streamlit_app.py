@@ -332,6 +332,10 @@ def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[s
     organizations = {}
     dates = {}
     amounts = {}
+    block_statuses = {
+        name: assess_block_completeness(files).get("Statut bloc", "vide")
+        for name, files in block_files_map.items()
+    }
 
     for block_name, insights in block_insights.items():
         if not insights:
@@ -346,8 +350,12 @@ def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[s
         if amount_value != "Aucun":
             amounts[block_name] = amount_value
 
-    if len(available_blocks) == 3:
+    detected_signal_count = len(organizations) + len(dates) + len(amounts)
+
+    if len(available_blocks) == 3 and detected_signal_count >= 4:
         readiness = "pret pour pre-analyse"
+    elif len(available_blocks) == 3:
+        readiness = "structure complete mais informations faibles"
     elif len(available_blocks) == 2:
         readiness = "partiellement pret"
     else:
@@ -363,12 +371,23 @@ def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[s
         checks.append("blocs manquants : " + ", ".join(missing_blocks))
         issues.append("au moins un bloc est manquant")
 
+    weak_blocks = [name for name, status in block_statuses.items() if status != "suffisant"]
+    if weak_blocks:
+        issues.append("blocs a renforcer : " + ", ".join(weak_blocks))
+
     if "Documents dossier" in dates and "Documents projet" not in dates:
         issues.append("date detectee dans le dossier mais absente du projet")
     if "Documents dossier" in organizations and "Documents client" not in organizations:
         issues.append("organisme detecte dans le dossier mais absent du bloc client")
     if "Documents projet" in amounts and "Documents dossier" not in amounts:
         issues.append("montant detecte dans le projet mais absent du dossier")
+
+    if not organizations:
+        issues.append("aucun organisme clairement detecte a l'echelle globale")
+    if not dates:
+        issues.append("aucune date clairement detectee a l'echelle globale")
+    if not amounts:
+        issues.append("aucun montant clairement detecte a l'echelle globale")
 
     if len(set(organizations.values())) > 1 and len(organizations) >= 2:
         issues.append("organismes detectes differents selon les blocs")
@@ -386,6 +405,7 @@ def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[s
         "Etat global": readiness,
         "Blocs disponibles": ", ".join(available_blocks) if available_blocks else "Aucun",
         "Blocs manquants": ", ".join(missing_blocks) if missing_blocks else "Aucun",
+        "Statut des blocs": " | ".join(f"{k}: {v}" for k, v in block_statuses.items()),
         "Organismes par bloc": " | ".join(f"{k}: {v}" for k, v in organizations.items()) if organizations else "Aucun",
         "Dates par bloc": " | ".join(f"{k}: {v}" for k, v in dates.items()) if dates else "Aucune",
         "Montants par bloc": " | ".join(f"{k}: {v}" for k, v in amounts.items()) if amounts else "Aucun",
