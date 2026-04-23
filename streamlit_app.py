@@ -1064,17 +1064,17 @@ def render_wf3_section(
 
     st.markdown("### Controles fins")
     fine_col1, fine_col2, fine_col3, fine_col4, fine_col5 = st.columns(5)
-    fine_col1.metric("Structure", wf3["structure"])
-    fine_col2.metric("Calendrier", wf3["calendrier"])
-    fine_col3.metric("Budget", wf3["budget"])
-    fine_col4.metric("Conditions", wf3["conditions"])
-    fine_col5.metric("Capacite", wf3["capacite"])
+    fine_col1.metric("Structure", summarize_control_label(wf3["structure"]))
+    fine_col2.metric("Calendrier", summarize_control_label(wf3["calendrier"]))
+    fine_col3.metric("Budget", summarize_control_label(wf3["budget"]))
+    fine_col4.metric("Conditions", summarize_control_label(wf3["conditions"]))
+    fine_col5.metric("Capacite", summarize_control_label(wf3["capacite"]))
 
     st.markdown("### Contexte global integre")
     global_col1, global_col2, global_col3 = st.columns(3)
-    global_col1.metric("Contexte global", wf3["contexte_global"])
+    global_col1.metric("Contexte global", summarize_readiness_label(wf3["contexte_global"]))
     global_col2.metric("Fiabilite globale", wf3["fiabilite_globale"])
-    global_col3.metric("Risque global", wf3["risque_global"])
+    global_col3.metric("Risque global", summarize_risk_label(wf3["risque_global"]))
 
     st.markdown("### Justifications")
     st.write(wf3["justifications"])
@@ -1264,6 +1264,58 @@ def build_upload_summary(uploaded_file) -> dict[str, str]:
     }
 
 
+def summarize_readiness_label(value: str) -> str:
+    normalized = value.lower()
+    if "pret pour pre-analyse" in normalized:
+        return "solide"
+    if "partiellement exploitable" in normalized or "partiellement pret" in normalized:
+        return "moyen"
+    if "structure complete mais informations faibles" in normalized:
+        return "fragile"
+    if "insuffisant" in normalized:
+        return "incomplet"
+    return value
+
+
+def summarize_prescore_label(value: str) -> str:
+    normalized = value.lower()
+    if "bon" in normalized:
+        return "solide"
+    if "moyen" in normalized:
+        return "moyen"
+    if "faible" in normalized:
+        return "fragile"
+    return value
+
+
+def summarize_risk_label(value: str) -> str:
+    normalized = value.lower()
+    if "eleve" in normalized:
+        return "eleve"
+    if "moyen" in normalized:
+        return "moyen"
+    if "modere" in normalized:
+        return "modere"
+    if "non evalue" in normalized:
+        return "a verifier"
+    return value
+
+
+def summarize_control_label(value: str) -> str:
+    normalized = value.lower()
+    if normalized == "ok":
+        return "solide"
+    if normalized == "partiel":
+        return "partiel"
+    if normalized == "manquant":
+        return "manquant"
+    if normalized == "ecart":
+        return "ecart"
+    if normalized == "a confirmer":
+        return "a verifier"
+    return value
+
+
 def render_global_summary(summary_map: dict[str, list[dict[str, str]]]) -> None:
     st.subheader("Recapitulatif global")
     col1, col2, col3 = st.columns(3)
@@ -1286,8 +1338,8 @@ def render_cross_block_summary(summary: dict[str, str]) -> None:
     st.subheader("Synthese globale inter-blocs")
 
     col1, col2 = st.columns(2)
-    col1.metric("Etat global", summary.get("Etat global", "inconnu"))
-    col2.metric("Pre-score global", summary.get("Pre-score global", "inconnu"))
+    col1.metric("Preparation", summarize_readiness_label(summary.get("Etat global", "inconnu")))
+    col2.metric("Solidite", summarize_prescore_label(summary.get("Pre-score global", "inconnu")))
 
     st.markdown("### Vue d'ensemble")
     st.write(f"**Blocs disponibles** : {summary.get('Blocs disponibles', 'Aucun')}")
@@ -1372,23 +1424,29 @@ def render_global_context_bridge(global_bridge: dict[str, str]) -> None:
     st.subheader("Pont global - Contexte documentaire et fiabilite")
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("Etat global", global_bridge.get("etat_global_documentaire", "inconnu"))
-    col2.metric("Pre-score documentaire", global_bridge.get("prescore_global_documentaire", "inconnu"))
-    col3.metric("Blocs disponibles", global_bridge.get("blocs_disponibles", "Aucun"))
+    col1.metric("Preparation du dossier", summarize_readiness_label(global_bridge.get("etat_global_documentaire", "inconnue")))
+    col2.metric("Solidite documentaire", summarize_prescore_label(global_bridge.get("prescore_global_documentaire", "inconnue")))
+    col3.metric("Blocs exploites", global_bridge.get("blocs_disponibles", "Aucun"))
 
-    st.markdown("### Contexte global")
-    st.write(f"**Blocs manquants** : {global_bridge.get('blocs_manquants', 'Aucun')}")
-    st.write(f"**Statut des blocs** : {global_bridge.get('statut_blocs', 'Aucun')}")
-    st.write(f"**Controle global** : {global_bridge.get('controle_global', 'Aucun')}")
-    st.write(f"**Incoherences globales** : {global_bridge.get('incoherences_globales', 'Aucune')}")
+    st.markdown("### Lecture metier")
+    st.write(f"**Etat de preparation** : {global_bridge.get('etat_global_documentaire', 'inconnu')}")
+    st.write(f"**Points de vigilance avant analyse** : {global_bridge.get('incoherences_globales', 'Aucune')}")
+    st.write(f"**Actions a traiter en priorite** : {global_bridge.get('actions_prealables', 'Aucune')}")
 
-    st.markdown("### Priorites et fiabilite")
-    st.write(f"**Priorite date** : {global_bridge.get('priorite_date', 'Aucune')}")
-    st.write(f"**Priorite organisme** : {global_bridge.get('priorite_organisme', 'Aucun')}")
-    st.write(f"**Priorite montant** : {global_bridge.get('priorite_montant', 'Aucun')}")
-    st.write(f"**Fiabilite dossier** : {global_bridge.get('fiabilite_dossier', 'Aucun')}")
-    st.write(f"**Fiabilite client** : {global_bridge.get('fiabilite_client', 'Aucun')}")
-    st.write(f"**Fiabilite projet** : {global_bridge.get('fiabilite_projet', 'Aucun')}")
+    st.markdown("### Qualite du socle documentaire")
+    st.write(f"**Blocs encore manquants** : {global_bridge.get('blocs_manquants', 'Aucun')}")
+    st.write(f"**Niveau des blocs** : {global_bridge.get('statut_blocs', 'Aucun')}")
+    st.write(f"**Lecture transversale possible** : {global_bridge.get('controle_global', 'Aucun')}")
+
+    st.markdown("### Signaux prioritaires retenus")
+    st.write(f"**Date de reference la plus utile** : {global_bridge.get('priorite_date', 'Aucune')}")
+    st.write(f"**Organisme le plus probable** : {global_bridge.get('priorite_organisme', 'Aucun')}")
+    st.write(f"**Montant de reference** : {global_bridge.get('priorite_montant', 'Aucun')}")
+
+    with st.expander("Voir la fiabilite par bloc", expanded=False):
+        st.write(f"**Fiabilite du bloc dossier** : {global_bridge.get('fiabilite_dossier', 'Aucun')}")
+        st.write(f"**Fiabilite du bloc client** : {global_bridge.get('fiabilite_client', 'Aucun')}")
+        st.write(f"**Fiabilite du bloc projet** : {global_bridge.get('fiabilite_projet', 'Aucun')}")
 
     with st.expander("Voir la provenance et le contexte fin", expanded=False):
         st.write(f"**Provenance dossier** : {global_bridge.get('provenance_dossier', 'Aucune')}")
