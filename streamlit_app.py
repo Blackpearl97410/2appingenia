@@ -108,6 +108,34 @@ def render_normalized_text(content: str, filename: str) -> None:
     )
 
 
+def build_upload_summary(uploaded_file) -> dict[str, str]:
+    suffix = Path(uploaded_file.name).suffix.lower() or "inconnu"
+    return {
+        "Nom": uploaded_file.name,
+        "Type": suffix,
+        "Taille": f"{uploaded_file.size} octets",
+        "Statut": "Charge",
+    }
+
+
+def render_global_summary(summary_map: dict[str, dict[str, str] | None]) -> None:
+    st.subheader("Recapitulatif global")
+    col1, col2, col3 = st.columns(3)
+
+    loaded_count = sum(1 for value in summary_map.values() if value is not None)
+    col1.metric("Blocs complets", str(loaded_count))
+    col2.metric("Blocs manquants", str(len(summary_map) - loaded_count))
+    col3.metric("Cible", "3 uploads")
+
+    for block_name, info in summary_map.items():
+        if info is None:
+            st.warning(f"{block_name} : aucun document charge")
+        else:
+            st.success(
+                f"{block_name} : {info['Nom']} | {info['Type']} | {info['Taille']}"
+            )
+
+
 def process_uploaded_file(uploaded_file, category_label: str) -> None:
     st.markdown(f"## {category_label}")
     st.success("Document recu avec succes.")
@@ -285,9 +313,10 @@ def render_upload_block(title: str, help_text: str, uploader_key: str) -> None:
 
     if uploaded_file is None:
         st.info("Aucun document charge pour ce bloc.")
-        return
+        return None
 
     process_uploaded_file(uploaded_file, title)
+    return build_upload_summary(uploaded_file)
 
 
 def render_upload() -> None:
@@ -296,23 +325,27 @@ def render_upload() -> None:
         "Le flux metier repose sur trois types de documents distincts : dossier, client et projet."
     )
 
-    render_upload_block(
+    summary_map = {}
+
+    summary_map["Documents dossier"] = render_upload_block(
         "Documents dossier",
         "Documents cibles a analyser : appel a projets, reglement, cahier des charges, cadre d'intervention.",
         "upload_dossier",
     )
     st.divider()
-    render_upload_block(
+    summary_map["Documents client"] = render_upload_block(
         "Documents client",
         "Documents qui decrivent la structure porteuse : presentation, statuts, references, plaquette.",
         "upload_client",
     )
     st.divider()
-    render_upload_block(
+    summary_map["Documents projet"] = render_upload_block(
         "Documents projet",
         "Documents qui decrivent l'action ou la demande : note d'intention, budget, description du projet.",
         "upload_projet",
     )
+    st.divider()
+    render_global_summary(summary_map)
 
 
 def main() -> None:
