@@ -229,9 +229,12 @@ def aggregate_block_text(uploaded_files) -> str:
             chunks.append(" ".join(str(col) for col in dataframe.columns))
         elif suffix == ".xlsx":
             workbook = parse_excel_bytes(file_bytes)
-            for sheet_name, sheet_df in workbook.items():
+            business_sheets, informative_sheets = filter_business_sheets(workbook)
+            for sheet_name, sheet_df in business_sheets.items():
                 chunks.append(sheet_name)
                 chunks.append(" ".join(str(col) for col in sheet_df.columns))
+            for sheet_name in informative_sheets:
+                chunks.append(sheet_name)
 
     return "\n".join(chunk for chunk in chunks if chunk).lower()
 
@@ -373,11 +376,14 @@ def collect_block_insights(uploaded_files) -> dict[str, str]:
             local_findings.append(f"{len(dataframe.columns)} colonnes")
         elif suffix == ".xlsx":
             workbook = parse_excel_bytes(file_bytes)
+            business_sheets, informative_sheets = filter_business_sheets(workbook)
             add_detected_value(keywords, "keyword", "tableau", source_name)
-            for sheet_df in workbook.values():
+            for sheet_df in business_sheets.values():
                 for col in list(sheet_df.columns)[:5]:
                     add_detected_value(keywords, "keyword", str(col).lower(), source_name)
-            local_findings.append(f"{len(workbook)} feuille(s)")
+            local_findings.append(f"{len(business_sheets)} feuille(s) metier")
+            if informative_sheets:
+                local_findings.append(f"{len(informative_sheets)} feuille(s) informatives")
 
         if local_findings:
             provenances.append(f"{source_name} -> " + ", ".join(local_findings[:4]))
@@ -411,6 +417,39 @@ def workbook_to_markdown(workbook: dict[str, pd.DataFrame], title: str) -> str:
     for sheet_name, sheet_df in workbook.items():
         sections.append(dataframe_to_markdown(sheet_df, sheet_name))
     return "\n\n".join(sections)
+
+
+def classify_sheet(sheet_name: str) -> str:
+    normalized = sheet_name.lower().strip()
+    informative_keywords = [
+        "lisez",
+        "readme",
+        "read me",
+        "mode d'emploi",
+        "instructions",
+        "notice",
+        "sommaire",
+    ]
+    if any(keyword in normalized for keyword in informative_keywords):
+        return "informatif"
+    return "metier"
+
+
+def filter_business_sheets(workbook: dict[str, pd.DataFrame]) -> tuple[dict[str, pd.DataFrame], list[str]]:
+    business_sheets: dict[str, pd.DataFrame] = {}
+    informative_sheets: list[str] = []
+
+    for sheet_name, sheet_df in workbook.items():
+        category = classify_sheet(sheet_name)
+        if category == "informatif":
+            informative_sheets.append(sheet_name)
+        else:
+            business_sheets[sheet_name] = sheet_df
+
+    if not business_sheets:
+        return workbook, informative_sheets
+
+    return business_sheets, informative_sheets
 
 
 def render_normalized_text(content: str, filename: str) -> None:
@@ -657,7 +696,11 @@ def build_block_normalized_text(title: str, uploaded_files) -> str:
             chunks.append(dataframe_to_markdown(dataframe, uploaded_file.name))
         elif suffix == ".xlsx":
             workbook = parse_excel_bytes(file_bytes)
-            for sheet_name, sheet_df in workbook.items():
+            business_sheets, informative_sheets = filter_business_sheets(workbook)
+            if informative_sheets:
+                chunks.append("## FEUILLES INFORMATIVES")
+                chunks.append(", ".join(informative_sheets))
+            for sheet_name, sheet_df in business_sheets.items():
                 chunks.append(dataframe_to_markdown(sheet_df, f"{uploaded_file.name} - {sheet_name}"))
         elif suffix == ".pdf":
             pdf_text, _, _, pdf_error = parse_pdf_bytes(file_bytes)
@@ -709,29 +752,41 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
     if suffix == ".xlsx":
         workbook = parse_excel_bytes(file_bytes)
         sheet_names = list(workbook.keys())
+        business_sheets, informative_sheets = filter_business_sheets(workbook)
+        displayed_sheets = business_sheets if business_sheets else workbook
 
         st.markdown("### Feuilles detectees")
         st.write(", ".join(f"`{name}`" for name in sheet_names))
+        if informative_sheets:
+            st.info("Feuilles informatives detectees : " + ", ".join(f"`{name}`" for name in informative_sheets))
 
-        selected_sheet = st.selectbox("Choisir une feuille", sheet_names)
-        selected_df = workbook[selected_sheet]
-        csv_content = selected_df.to_csv(index=False)
-        metadata = extract_table_metadata(selected_df, uploaded_file.name)
-        metadata["Feuille selectionnee"] = selected_sheet
+        first_sheet_name = next(iter(displayed_sheets.keys()))
+        first_df = displayed_sheets[first_sheet_name]
+        metadata = extract_table_metadata(first_df, uploaded_file.name)
+        metadata["Nombre de feuilles"] = str(len(sheet_names))
+        metadata["Feuilles metier"] = str(len(displayed_sheets))
         render_metadata(metadata)
 
-        st.markdown("### Apercu Excel")
-        st.dataframe(selected_df, use_container_width=True)
-        st.write(f"Lignes : `{len(selected_df)}`")
-        st.write(f"Colonnes : `{len(selected_df.columns)}`")
-        st.markdown("### Conversion CSV")
-        st.text_area("CSV genere", csv_content[:5000], height=220)
-        st.download_button(
-            "Telecharger la feuille en CSV",
-            data=csv_content,
-            file_name=f"{Path(uploaded_file.name).stem}_{selected_sheet}.csv",
-            mime="text/csv",
-        )
+        st.markdown("### Apercu Excel par feuille")
+        for sheet_name, sheet_df in displayed_sheets.items():
+            csv_content = sheet_df.to_csv(index=False)
+            with st.expander(f"Feuille : {sheet_name}", expanded=False):
+                st.dataframe(sheet_df, use_container_width=True)
+                st.write(f"Lignes : `{len(sheet_df)}`")
+                st.write(f"Colonnes : `{len(sheet_df.columns)}`")
+                st.text_area(
+                    f"CSV genere - {sheet_name}",
+                    csv_content[:5000],
+                    height=180,
+                    key=f"csv_preview_{uploaded_file.name}_{sheet_name}",
+                )
+                st.download_button(
+                    f"Telecharger {sheet_name} en CSV",
+                    data=csv_content,
+                    file_name=f"{Path(uploaded_file.name).stem}_{sheet_name}.csv",
+                    mime="text/csv",
+                    key=f"csv_download_{uploaded_file.name}_{sheet_name}",
+                )
         normalized_text = workbook_to_markdown(workbook, uploaded_file.name)
         render_normalized_text(normalized_text, uploaded_file.name)
         return
