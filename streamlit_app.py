@@ -1022,6 +1022,13 @@ def compute_wf3_local(bridge: dict[str, str], global_bridge: dict[str, str] | No
         "contexte_global": contexte_global,
         "fiabilite_globale": fiabilite_globale,
         "risque_global": risque_global,
+        "justifications_items": justifications,
+        "manques_items": manques,
+        "details_items": details,
+        "actions_globales_items": [
+            item.strip() for item in actions_globales.split(" | ")
+            if item.strip() and item.strip() != "Aucune"
+        ],
         "justifications": " | ".join(justifications) if justifications else "Aucune justification forte",
         "manques": " | ".join(manques) if manques else "Aucun manque majeur detecte",
         "details": " | ".join(details) if details else "Aucun detail fin disponible",
@@ -1077,16 +1084,32 @@ def render_wf3_section(
     global_col3.metric("Risque global", summarize_risk_label(wf3["risque_global"]))
 
     st.markdown("### Justifications")
-    st.write(wf3["justifications"])
+    if wf3.get("justifications_items"):
+        for item in wf3["justifications_items"]:
+            st.write(f"- {item}")
+    else:
+        st.write(wf3["justifications"])
 
     st.markdown("### Manques a combler")
-    st.write(wf3["manques"])
+    if wf3.get("manques_items"):
+        for item in wf3["manques_items"]:
+            st.write(f"- {item}")
+    else:
+        st.write(wf3["manques"])
 
     st.markdown("### Actions globales prealables")
-    st.write(wf3["actions_globales"])
+    if wf3.get("actions_globales_items"):
+        for item in wf3["actions_globales_items"]:
+            st.write(f"- {item}")
+    else:
+        st.write(wf3["actions_globales"])
 
     with st.expander("Voir le detail des comparaisons fines", expanded=False):
-        st.write(wf3["details"])
+        if wf3.get("details_items"):
+            for item in wf3["details_items"]:
+                st.write(f"- {item}")
+        else:
+            st.write(wf3["details"])
 
 
 def collect_block_insights(uploaded_files) -> dict[str, str]:
