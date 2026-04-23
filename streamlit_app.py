@@ -298,6 +298,42 @@ def evaluate_block_criteria(block_name: str, uploaded_files, insights: dict[str,
     }
 
 
+def build_block_recommendations(block_name: str, insights: dict[str, str], criteria: dict[str, str | int]) -> str:
+    recommendations: list[str] = []
+
+    dates_value = insights.get("Dates reperees", "Aucune")
+    org_value = insights.get("Organismes reperes", "Aucun")
+    amount_value = insights.get("Montants reperes", "Aucun")
+    status = str(criteria.get("status", "insuffisant"))
+
+    if block_name == "Documents dossier":
+        if dates_value == "Aucune":
+            recommendations.append("ajouter un document mentionnant clairement la date limite ou les dates de reference")
+        if org_value == "Aucun":
+            recommendations.append("ajouter un reglement ou cadre indiquant l'organisme financeur")
+        if status in {"faible", "insuffisant"}:
+            recommendations.append("ajouter une piece de cadrage type appel, reglement ou cahier des charges")
+
+    elif block_name == "Documents client":
+        if org_value == "Aucun":
+            recommendations.append("ajouter un document d'identite de structure : statuts, presentation ou fiche entreprise")
+        if status in {"faible", "insuffisant"}:
+            recommendations.append("ajouter des elements administratifs ou de presentation : SIRET, adresse, activite, references")
+
+    elif block_name == "Documents projet":
+        if amount_value == "Aucun":
+            recommendations.append("ajouter un budget, plan de financement ou document avec montant de projet")
+        if dates_value == "Aucune":
+            recommendations.append("ajouter un planning ou calendrier du projet")
+        if status in {"faible", "insuffisant"}:
+            recommendations.append("ajouter une note d'intention ou une description detaillee du projet")
+
+    if not recommendations:
+        return "bloc suffisamment renseigne pour l'etape actuelle"
+
+    return " | ".join(recommendations[:4])
+
+
 def collect_block_insights(uploaded_files) -> dict[str, str]:
     dates: dict[str, set[str]] = {}
     amounts: dict[str, set[str]] = {}
@@ -491,6 +527,43 @@ def render_global_summary(summary_map: dict[str, list[dict[str, str]]]) -> None:
                 st.write(f"- {info['Nom']} | {info['Type']} | {info['Taille']}")
 
 
+def render_cross_block_summary(summary: dict[str, str]) -> None:
+    st.subheader("Synthese globale inter-blocs")
+
+    col1, col2 = st.columns(2)
+    col1.metric("Etat global", summary.get("Etat global", "inconnu"))
+    col2.metric("Pre-score global", summary.get("Pre-score global", "inconnu"))
+
+    st.markdown("### Vue d'ensemble")
+    st.write(f"**Blocs disponibles** : {summary.get('Blocs disponibles', 'Aucun')}")
+    st.write(f"**Blocs manquants** : {summary.get('Blocs manquants', 'Aucun')}")
+    st.write(f"**Statut des blocs** : {summary.get('Statut des blocs', 'Aucun')}")
+
+    st.markdown("### Criteres par bloc")
+    st.write(f"**Dossier** : {summary.get('Criteres dossier', 'Aucun')}")
+    st.write(f"**Client** : {summary.get('Criteres client', 'Aucun')}")
+    st.write(f"**Projet** : {summary.get('Criteres projet', 'Aucun')}")
+
+    st.markdown("### Priorites detectees")
+    st.write(f"**Date prioritaire** : {summary.get('Date prioritaire', 'Aucune')}")
+    st.write(f"**Organisme prioritaire** : {summary.get('Organisme prioritaire', 'Aucun')}")
+    st.write(f"**Montant prioritaire** : {summary.get('Montant prioritaire', 'Aucun')}")
+
+    st.markdown("### Incoherences et controles")
+    st.write(f"**Controle simple** : {summary.get('Controle simple', 'Aucun')}")
+    st.write(f"**Incoherences detectees** : {summary.get('Incoherences detectees', 'Aucune')}")
+
+    st.markdown("### Actions recommandees")
+    st.write(f"**Action dossier** : {summary.get('Action dossier', 'Aucune')}")
+    st.write(f"**Action client** : {summary.get('Action client', 'Aucune')}")
+    st.write(f"**Action projet** : {summary.get('Action projet', 'Aucune')}")
+
+    with st.expander("Voir les details detectes par bloc", expanded=False):
+        st.write(f"**Organismes par bloc** : {summary.get('Organismes par bloc', 'Aucun')}")
+        st.write(f"**Dates par bloc** : {summary.get('Dates par bloc', 'Aucune')}")
+        st.write(f"**Montants par bloc** : {summary.get('Montants par bloc', 'Aucun')}")
+
+
 def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[str, str]:
     dossier_priority = ["Documents dossier", "Documents projet", "Documents client"]
     client_priority = ["Documents client", "Documents projet", "Documents dossier"]
@@ -509,6 +582,11 @@ def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[s
             "status": "insuffisant",
             "checks": "bloc vide",
         }
+        for name, files in block_files_map.items()
+    }
+    block_recommendations = {
+        name: build_block_recommendations(name, block_insights.get(name, {}), block_criteria.get(name, {}))
+        if files else "charger au moins un document dans ce bloc"
         for name, files in block_files_map.items()
     }
 
@@ -611,6 +689,9 @@ def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[s
         "Criteres dossier": f"{block_criteria['Documents dossier']['status']} ({block_criteria['Documents dossier']['score']}/30) - {block_criteria['Documents dossier']['checks']}",
         "Criteres client": f"{block_criteria['Documents client']['status']} ({block_criteria['Documents client']['score']}/30) - {block_criteria['Documents client']['checks']}",
         "Criteres projet": f"{block_criteria['Documents projet']['status']} ({block_criteria['Documents projet']['score']}/30) - {block_criteria['Documents projet']['checks']}",
+        "Action dossier": block_recommendations["Documents dossier"],
+        "Action client": block_recommendations["Documents client"],
+        "Action projet": block_recommendations["Documents projet"],
         "Date prioritaire": choose_priority_value(dates, dossier_priority),
         "Organisme prioritaire": choose_priority_value(organizations, client_priority),
         "Montant prioritaire": choose_priority_value(amounts, project_priority),
@@ -957,8 +1038,7 @@ def render_upload() -> None:
     st.divider()
     render_global_summary(summary_map)
     st.divider()
-    st.subheader("Synthese globale inter-blocs")
-    render_metadata(build_global_cross_block_summary(block_files_map))
+    render_cross_block_summary(build_global_cross_block_summary(block_files_map))
 
 
 def main() -> None:
