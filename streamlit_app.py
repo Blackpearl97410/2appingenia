@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 from docx import Document
 from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
 
 ROOT_DIR = Path(__file__).parent
@@ -52,14 +53,19 @@ def parse_excel_bytes(file_bytes: bytes) -> dict[str, pd.DataFrame]:
     return pd.read_excel(BytesIO(file_bytes), sheet_name=None)
 
 
-def parse_pdf_bytes(file_bytes: bytes) -> tuple[str, int, int]:
-    reader = PdfReader(BytesIO(file_bytes))
-    pages_text = []
-    for page in reader.pages:
-        page_text = page.extract_text() or ""
-        if page_text.strip():
-            pages_text.append(page_text.strip())
-    return "\n\n".join(pages_text), len(reader.pages), len(pages_text)
+def parse_pdf_bytes(file_bytes: bytes) -> tuple[str, int, int, str | None]:
+    try:
+        reader = PdfReader(BytesIO(file_bytes))
+        pages_text = []
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                pages_text.append(page_text.strip())
+        return "\n\n".join(pages_text), len(reader.pages), len(pages_text), None
+    except PdfReadError as exc:
+        return "", 0, 0, f"PDF illisible par le parseur ({exc})"
+    except Exception as exc:
+        return "", 0, 0, f"Erreur de lecture PDF ({exc.__class__.__name__})"
 
 
 def parse_docx_bytes(file_bytes: bytes) -> tuple[str, str, int]:
@@ -223,7 +229,10 @@ def collect_block_insights(uploaded_files) -> dict[str, str]:
                 add_detected_value(keywords, "keyword", word, source_name)
 
         elif suffix == ".pdf":
-            pdf_text, _, _ = parse_pdf_bytes(file_bytes)
+            pdf_text, _, _, pdf_error = parse_pdf_bytes(file_bytes)
+            if pdf_error:
+                provenances.append(f"{source_name} -> {pdf_error}")
+                continue
             metadata = extract_text_metadata(pdf_text, uploaded_file.name)
             detected_date = metadata.get("Date detectee", "")
             detected_amount = metadata.get("Montant detecte", "")
@@ -345,12 +354,33 @@ def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[s
         readiness = "insuffisant pour comparaison"
 
     checks = []
+    issues = []
     if "Documents dossier" in organizations and "Documents projet" in organizations:
         checks.append("dossier/projet : organismes detectes disponibles")
     if "Documents client" in available_blocks and "Documents projet" in available_blocks:
         checks.append("client/projet : comparaison possible")
     if missing_blocks:
         checks.append("blocs manquants : " + ", ".join(missing_blocks))
+        issues.append("au moins un bloc est manquant")
+
+    if "Documents dossier" in dates and "Documents projet" not in dates:
+        issues.append("date detectee dans le dossier mais absente du projet")
+    if "Documents dossier" in organizations and "Documents client" not in organizations:
+        issues.append("organisme detecte dans le dossier mais absent du bloc client")
+    if "Documents projet" in amounts and "Documents dossier" not in amounts:
+        issues.append("montant detecte dans le projet mais absent du dossier")
+
+    if len(set(organizations.values())) > 1 and len(organizations) >= 2:
+        issues.append("organismes detectes differents selon les blocs")
+    if len(set(dates.values())) > 1 and len(dates) >= 2:
+        issues.append("dates detectees non homogenes entre les blocs")
+    if len(set(amounts.values())) > 1 and len(amounts) >= 2:
+        issues.append("montants detectes non homogenes entre les blocs")
+
+    if not issues:
+        issues_text = "Aucune incoherence simple detectee"
+    else:
+        issues_text = " | ".join(issues[:8])
 
     return {
         "Etat global": readiness,
@@ -360,6 +390,7 @@ def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[s
         "Dates par bloc": " | ".join(f"{k}: {v}" for k, v in dates.items()) if dates else "Aucune",
         "Montants par bloc": " | ".join(f"{k}: {v}" for k, v in amounts.items()) if amounts else "Aucun",
         "Controle simple": " | ".join(checks) if checks else "Aucun controle disponible",
+        "Incoherences detectees": issues_text,
     }
 
 
@@ -440,8 +471,11 @@ def build_block_normalized_text(title: str, uploaded_files) -> str:
             for sheet_name, sheet_df in workbook.items():
                 chunks.append(dataframe_to_markdown(sheet_df, f"{uploaded_file.name} - {sheet_name}"))
         elif suffix == ".pdf":
-            pdf_text, _, _ = parse_pdf_bytes(file_bytes)
-            chunks.append(pdf_text[:10000] or "[aucun texte exploitable]")
+            pdf_text, _, _, pdf_error = parse_pdf_bytes(file_bytes)
+            if pdf_error:
+                chunks.append(f"[{pdf_error}]")
+            else:
+                chunks.append(pdf_text[:10000] or "[aucun texte exploitable]")
         elif suffix == ".docx":
             _, markdown_content, _ = parse_docx_bytes(file_bytes)
             chunks.append(markdown_content[:10000] or "[aucun texte exploitable]")
@@ -514,7 +548,13 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
         return
 
     if suffix == ".pdf":
-        pdf_text, page_count, text_page_count = parse_pdf_bytes(file_bytes)
+        pdf_text, page_count, text_page_count, pdf_error = parse_pdf_bytes(file_bytes)
+
+        if pdf_error:
+            st.error(f"Lecture PDF impossible : {pdf_error}")
+            st.write("Ce fichier peut etre corrompu, mal exporte, ou non conforme au format PDF attendu.")
+            st.write("Le bloc continue a fonctionner, mais ce document n'est pas exploitable pour l'instant.")
+            return
 
         if not pdf_text:
             st.warning("Le PDF a ete charge, mais aucun texte exploitable n'a ete detecte.")
