@@ -1,5 +1,4 @@
-from app.main import main
+import streamlit as st
 
-
-if __name__ == "__main__":
-    main()
+st.title("AAP Ingenia")
+st.write("Test OK")
