@@ -70,7 +70,7 @@ def render_demo_data() -> None:
 
 
 def render_upload() -> None:
-    st.subheader("Premier test d'upload")
+    st.subheader("Upload et lecture simple")
     uploaded_file = st.file_uploader(
         "Depose un document de test",
         type=["pdf", "docx", "txt", "csv", "xlsx"],
@@ -88,6 +88,37 @@ def render_upload() -> None:
 
     suffix = Path(uploaded_file.name).suffix.lower() or "inconnu"
     st.write(f"Type detecte : `{suffix}`")
+
+    if suffix == ".txt":
+        text_content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
+        st.markdown("### Apercu texte")
+        st.text_area("Contenu detecte", text_content[:5000], height=250)
+        st.write("Etape suivante : nettoyer et structurer ce texte.")
+        return
+
+    if suffix == ".csv":
+        dataframe = pd.read_csv(uploaded_file)
+        st.markdown("### Apercu tabulaire")
+        st.dataframe(dataframe, use_container_width=True)
+        st.write(f"Nombre de lignes : `{len(dataframe)}`")
+        st.write(f"Nombre de colonnes : `{len(dataframe.columns)}`")
+        return
+
+    if suffix == ".xlsx":
+        st.info("Le fichier Excel est bien recu. La lecture detaillee viendra dans l'etape suivante.")
+        st.write("Etape suivante : lire les feuilles et afficher un apercu.")
+        return
+
+    if suffix == ".pdf":
+        st.info("Le PDF est bien recu. L'extraction de texte n'est pas encore active.")
+        st.write("Etape suivante : brancher une extraction de texte PDF.")
+        return
+
+    if suffix == ".docx":
+        st.info("Le document Word est bien recu. La lecture du contenu viendra ensuite.")
+        st.write("Etape suivante : extraire le texte du DOCX.")
+        return
+
     st.write("Etape suivante : lecture du contenu et extraction de texte.")
 
 
