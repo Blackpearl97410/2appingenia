@@ -1,4 +1,5 @@
 from pathlib import Path
+from io import BytesIO
 import re
 
 import pandas as pd
@@ -29,6 +30,44 @@ def docx_to_markdown(document: Document) -> str:
         else:
             blocks.append(text)
     return "\n\n".join(blocks)
+
+
+def get_uploaded_suffix(uploaded_file) -> str:
+    return Path(uploaded_file.name).suffix.lower() or "inconnu"
+
+
+def get_uploaded_bytes(uploaded_file) -> bytes:
+    return uploaded_file.getvalue()
+
+
+def parse_text_bytes(file_bytes: bytes) -> str:
+    return file_bytes.decode("utf-8", errors="ignore")
+
+
+def parse_csv_bytes(file_bytes: bytes) -> pd.DataFrame:
+    return pd.read_csv(BytesIO(file_bytes))
+
+
+def parse_excel_bytes(file_bytes: bytes) -> dict[str, pd.DataFrame]:
+    return pd.read_excel(BytesIO(file_bytes), sheet_name=None)
+
+
+def parse_pdf_bytes(file_bytes: bytes) -> tuple[str, int, int]:
+    reader = PdfReader(BytesIO(file_bytes))
+    pages_text = []
+    for page in reader.pages:
+        page_text = page.extract_text() or ""
+        if page_text.strip():
+            pages_text.append(page_text.strip())
+    return "\n\n".join(pages_text), len(reader.pages), len(pages_text)
+
+
+def parse_docx_bytes(file_bytes: bytes) -> tuple[str, str, int]:
+    document = Document(BytesIO(file_bytes))
+    paragraphs = [p.text.strip() for p in document.paragraphs if p.text.strip()]
+    text_content = "\n\n".join(paragraphs)
+    markdown_content = docx_to_markdown(document)
+    return text_content, markdown_content, len(paragraphs)
 
 
 def extract_text_metadata(text: str, filename: str) -> dict[str, str]:
@@ -98,10 +137,11 @@ def collect_block_insights(uploaded_files) -> dict[str, str]:
     keywords = set()
 
     for uploaded_file in uploaded_files:
-        suffix = Path(uploaded_file.name).suffix.lower() or "inconnu"
+        suffix = get_uploaded_suffix(uploaded_file)
+        file_bytes = get_uploaded_bytes(uploaded_file)
 
         if suffix in {".txt", ".md"}:
-            text_content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
+            text_content = parse_text_bytes(file_bytes)
             metadata = extract_text_metadata(text_content, uploaded_file.name)
             detected_date = metadata.get("Date detectee")
             detected_amount = metadata.get("Montant detecte")
@@ -117,10 +157,7 @@ def collect_block_insights(uploaded_files) -> dict[str, str]:
             keywords.update(word for word in words[:20] if len(word) > 4)
 
         elif suffix == ".docx":
-            document = Document(uploaded_file)
-            text_content = "\n\n".join(
-                p.text.strip() for p in document.paragraphs if p.text.strip()
-            )
+            text_content, _, _ = parse_docx_bytes(file_bytes)
             metadata = extract_text_metadata(text_content, uploaded_file.name)
             detected_date = metadata.get("Date detectee")
             detected_amount = metadata.get("Montant detecte")
@@ -133,13 +170,7 @@ def collect_block_insights(uploaded_files) -> dict[str, str]:
                 organizations.add(detected_org)
 
         elif suffix == ".pdf":
-            reader = PdfReader(uploaded_file)
-            pdf_text_parts = []
-            for page in reader.pages:
-                page_text = page.extract_text() or ""
-                if page_text.strip():
-                    pdf_text_parts.append(page_text.strip())
-            pdf_text = "\n\n".join(pdf_text_parts)
+            pdf_text, _, _ = parse_pdf_bytes(file_bytes)
             metadata = extract_text_metadata(pdf_text, uploaded_file.name)
             detected_date = metadata.get("Date detectee")
             detected_amount = metadata.get("Montant detecte")
@@ -151,8 +182,15 @@ def collect_block_insights(uploaded_files) -> dict[str, str]:
             if detected_org and detected_org != "Non detecte":
                 organizations.add(detected_org)
 
-        elif suffix in {".csv", ".xlsx"}:
+        elif suffix == ".csv":
+            dataframe = parse_csv_bytes(file_bytes)
             keywords.add("tableau")
+            keywords.update(str(col).lower() for col in list(dataframe.columns)[:8])
+        elif suffix == ".xlsx":
+            workbook = parse_excel_bytes(file_bytes)
+            keywords.add("tableau")
+            for sheet_df in workbook.values():
+                keywords.update(str(col).lower() for col in list(sheet_df.columns)[:5])
 
     return {
         "Dates reperees": ", ".join(sorted(dates)) if dates else "Aucune",
@@ -180,7 +218,7 @@ def render_normalized_text(content: str, filename: str) -> None:
 
 
 def build_upload_summary(uploaded_file) -> dict[str, str]:
-    suffix = Path(uploaded_file.name).suffix.lower() or "inconnu"
+    suffix = get_uploaded_suffix(uploaded_file)
     return {
         "Nom": uploaded_file.name,
         "Type": suffix,
@@ -216,7 +254,7 @@ def assess_block_completeness(uploaded_files) -> dict[str, str]:
         }
 
     suffixes = {
-        Path(uploaded_file.name).suffix.lower() or "inconnu"
+        get_uploaded_suffix(uploaded_file)
         for uploaded_file in uploaded_files
     }
     file_count = len(uploaded_files)
@@ -248,7 +286,7 @@ def render_block_summary(title: str, uploaded_files) -> None:
     type_counts: dict[str, int] = {}
     total_size = 0
     for uploaded_file in uploaded_files:
-        suffix = Path(uploaded_file.name).suffix.lower() or "inconnu"
+        suffix = get_uploaded_suffix(uploaded_file)
         type_counts[suffix] = type_counts.get(suffix, 0) + 1
         total_size += uploaded_file.size
 
@@ -268,31 +306,27 @@ def render_block_summary(title: str, uploaded_files) -> None:
 def build_block_normalized_text(title: str, uploaded_files) -> str:
     chunks = [f"# {title}"]
     for uploaded_file in uploaded_files:
-        suffix = Path(uploaded_file.name).suffix.lower() or "inconnu"
+        suffix = get_uploaded_suffix(uploaded_file)
+        file_bytes = get_uploaded_bytes(uploaded_file)
         chunks.append(f"## DOCUMENT: {uploaded_file.name}")
         chunks.append(f"Type: {suffix}")
 
         if suffix in {".txt", ".md"}:
-            text_content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
+            text_content = parse_text_bytes(file_bytes)
             chunks.append(text_content[:10000] or "[contenu vide]")
         elif suffix == ".csv":
-            dataframe = pd.read_csv(uploaded_file)
+            dataframe = parse_csv_bytes(file_bytes)
             chunks.append(dataframe_to_markdown(dataframe, uploaded_file.name))
         elif suffix == ".xlsx":
-            workbook = pd.read_excel(uploaded_file, sheet_name=None)
+            workbook = parse_excel_bytes(file_bytes)
             for sheet_name, sheet_df in workbook.items():
                 chunks.append(dataframe_to_markdown(sheet_df, f"{uploaded_file.name} - {sheet_name}"))
         elif suffix == ".pdf":
-            reader = PdfReader(uploaded_file)
-            pages_text = []
-            for page in reader.pages:
-                page_text = page.extract_text() or ""
-                if page_text.strip():
-                    pages_text.append(page_text.strip())
-            chunks.append("\n\n".join(pages_text)[:10000] or "[aucun texte exploitable]")
+            pdf_text, _, _ = parse_pdf_bytes(file_bytes)
+            chunks.append(pdf_text[:10000] or "[aucun texte exploitable]")
         elif suffix == ".docx":
-            document = Document(uploaded_file)
-            chunks.append(docx_to_markdown(document)[:10000] or "[aucun texte exploitable]")
+            _, markdown_content, _ = parse_docx_bytes(file_bytes)
+            chunks.append(markdown_content[:10000] or "[aucun texte exploitable]")
         else:
             chunks.append("[type non pris en charge]")
 
@@ -307,11 +341,12 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
     col1.write(f"Nom : `{uploaded_file.name}`")
     col2.write(f"Taille : `{uploaded_file.size}` octets")
 
-    suffix = Path(uploaded_file.name).suffix.lower() or "inconnu"
+    suffix = get_uploaded_suffix(uploaded_file)
+    file_bytes = get_uploaded_bytes(uploaded_file)
     st.write(f"Type detecte : `{suffix}`")
 
     if suffix in {".txt", ".md"}:
-        text_content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
+        text_content = parse_text_bytes(file_bytes)
         render_metadata(extract_text_metadata(text_content, uploaded_file.name))
         st.markdown("### Apercu texte")
         st.text_area("Contenu detecte", text_content[:5000], height=250)
@@ -320,7 +355,7 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
         return
 
     if suffix == ".csv":
-        dataframe = pd.read_csv(uploaded_file)
+        dataframe = parse_csv_bytes(file_bytes)
         render_metadata(extract_table_metadata(dataframe, uploaded_file.name))
         st.markdown("### Apercu tabulaire")
         st.dataframe(dataframe, use_container_width=True)
@@ -331,7 +366,7 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
         return
 
     if suffix == ".xlsx":
-        workbook = pd.read_excel(uploaded_file, sheet_name=None)
+        workbook = parse_excel_bytes(file_bytes)
         sheet_names = list(workbook.keys())
 
         st.markdown("### Feuilles detectees")
@@ -361,14 +396,7 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
         return
 
     if suffix == ".pdf":
-        reader = PdfReader(uploaded_file)
-        pages_text = []
-        for page in reader.pages:
-            page_text = page.extract_text() or ""
-            if page_text.strip():
-                pages_text.append(page_text.strip())
-
-        pdf_text = "\n\n".join(pages_text)
+        pdf_text, page_count, text_page_count = parse_pdf_bytes(file_bytes)
 
         if not pdf_text:
             st.warning("Le PDF a ete charge, mais aucun texte exploitable n'a ete detecte.")
@@ -378,16 +406,13 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
         render_metadata(extract_text_metadata(pdf_text, uploaded_file.name))
         st.markdown("### Apercu PDF")
         st.text_area("Texte detecte", pdf_text[:5000], height=300)
-        st.write(f"Pages lues : `{len(reader.pages)}`")
-        st.write(f"Pages avec texte : `{len(pages_text)}`")
+        st.write(f"Pages lues : `{page_count}`")
+        st.write(f"Pages avec texte : `{text_page_count}`")
         render_normalized_text(pdf_text, uploaded_file.name)
         return
 
     if suffix == ".docx":
-        document = Document(uploaded_file)
-        paragraphs = [p.text.strip() for p in document.paragraphs if p.text.strip()]
-        text_content = "\n\n".join(paragraphs)
-        markdown_content = docx_to_markdown(document)
+        text_content, markdown_content, paragraph_count = parse_docx_bytes(file_bytes)
 
         if not text_content:
             st.warning("Le document DOCX a ete charge, mais aucun texte exploitable n'a ete trouve.")
@@ -396,7 +421,7 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
         render_metadata(extract_text_metadata(text_content, uploaded_file.name))
         st.markdown("### Apercu DOCX")
         st.text_area("Texte detecte", text_content[:5000], height=300)
-        st.write(f"Paragraphes detectes : `{len(paragraphs)}`")
+        st.write(f"Paragraphes detectes : `{paragraph_count}`")
         st.markdown("### Conversion Markdown")
         st.text_area("Markdown genere", markdown_content[:5000], height=260)
         st.download_button(
