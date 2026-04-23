@@ -4,6 +4,7 @@ import re
 import pandas as pd
 import streamlit as st
 from docx import Document
+from pypdf import PdfReader
 
 
 ROOT_DIR = Path(__file__).parent
@@ -90,6 +91,135 @@ def render_metadata(metadata: dict[str, str]) -> None:
         cols[index % 2].write(f"**{label}** : {value}")
 
 
+def dataframe_to_markdown(dataframe: pd.DataFrame, title: str) -> str:
+    preview_df = dataframe.head(20).fillna("")
+    table_markdown = preview_df.to_markdown(index=False)
+    return f"## {title}\n\n{table_markdown}"
+
+
+def render_normalized_text(content: str, filename: str) -> None:
+    st.markdown("### Source normalisee")
+    st.text_area("Contenu normalise", content[:5000], height=260)
+    st.download_button(
+        "Telecharger la source normalisee",
+        data=content,
+        file_name=f"{Path(filename).stem}_normalise.md",
+        mime="text/markdown",
+    )
+
+
+def process_uploaded_file(uploaded_file, category_label: str) -> None:
+    st.markdown(f"## {category_label}")
+    st.success("Document recu avec succes.")
+
+    col1, col2 = st.columns(2)
+    col1.write(f"Nom : `{uploaded_file.name}`")
+    col2.write(f"Taille : `{uploaded_file.size}` octets")
+
+    suffix = Path(uploaded_file.name).suffix.lower() or "inconnu"
+    st.write(f"Type detecte : `{suffix}`")
+
+    if suffix == ".txt":
+        text_content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
+        render_metadata(extract_text_metadata(text_content, uploaded_file.name))
+        st.markdown("### Apercu texte")
+        st.text_area("Contenu detecte", text_content[:5000], height=250)
+        render_normalized_text(text_content, uploaded_file.name)
+        st.write("Etape suivante : nettoyer et structurer ce texte.")
+        return
+
+    if suffix == ".csv":
+        dataframe = pd.read_csv(uploaded_file)
+        render_metadata(extract_table_metadata(dataframe, uploaded_file.name))
+        st.markdown("### Apercu tabulaire")
+        st.dataframe(dataframe, use_container_width=True)
+        st.write(f"Nombre de lignes : `{len(dataframe)}`")
+        st.write(f"Nombre de colonnes : `{len(dataframe.columns)}`")
+        normalized_text = dataframe_to_markdown(dataframe, uploaded_file.name)
+        render_normalized_text(normalized_text, uploaded_file.name)
+        return
+
+    if suffix == ".xlsx":
+        workbook = pd.read_excel(uploaded_file, sheet_name=None)
+        sheet_names = list(workbook.keys())
+
+        st.markdown("### Feuilles detectees")
+        st.write(", ".join(f"`{name}`" for name in sheet_names))
+
+        selected_sheet = st.selectbox("Choisir une feuille", sheet_names)
+        selected_df = workbook[selected_sheet]
+        csv_content = selected_df.to_csv(index=False)
+        metadata = extract_table_metadata(selected_df, uploaded_file.name)
+        metadata["Feuille selectionnee"] = selected_sheet
+        render_metadata(metadata)
+
+        st.markdown("### Apercu Excel")
+        st.dataframe(selected_df, use_container_width=True)
+        st.write(f"Lignes : `{len(selected_df)}`")
+        st.write(f"Colonnes : `{len(selected_df.columns)}`")
+        st.markdown("### Conversion CSV")
+        st.text_area("CSV genere", csv_content[:5000], height=220)
+        st.download_button(
+            "Telecharger la feuille en CSV",
+            data=csv_content,
+            file_name=f"{Path(uploaded_file.name).stem}_{selected_sheet}.csv",
+            mime="text/csv",
+        )
+        normalized_text = dataframe_to_markdown(selected_df, f"{uploaded_file.name} - {selected_sheet}")
+        render_normalized_text(normalized_text, uploaded_file.name)
+        return
+
+    if suffix == ".pdf":
+        reader = PdfReader(uploaded_file)
+        pages_text = []
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                pages_text.append(page_text.strip())
+
+        pdf_text = "\n\n".join(pages_text)
+
+        if not pdf_text:
+            st.warning("Le PDF a ete charge, mais aucun texte exploitable n'a ete detecte.")
+            st.write("Il est possible que le document soit scanne ou image.")
+            return
+
+        render_metadata(extract_text_metadata(pdf_text, uploaded_file.name))
+        st.markdown("### Apercu PDF")
+        st.text_area("Texte detecte", pdf_text[:5000], height=300)
+        st.write(f"Pages lues : `{len(reader.pages)}`")
+        st.write(f"Pages avec texte : `{len(pages_text)}`")
+        render_normalized_text(pdf_text, uploaded_file.name)
+        return
+
+    if suffix == ".docx":
+        document = Document(uploaded_file)
+        paragraphs = [p.text.strip() for p in document.paragraphs if p.text.strip()]
+        text_content = "\n\n".join(paragraphs)
+        markdown_content = docx_to_markdown(document)
+
+        if not text_content:
+            st.warning("Le document DOCX a ete charge, mais aucun texte exploitable n'a ete trouve.")
+            return
+
+        render_metadata(extract_text_metadata(text_content, uploaded_file.name))
+        st.markdown("### Apercu DOCX")
+        st.text_area("Texte detecte", text_content[:5000], height=300)
+        st.write(f"Paragraphes detectes : `{len(paragraphs)}`")
+        st.markdown("### Conversion Markdown")
+        st.text_area("Markdown genere", markdown_content[:5000], height=260)
+        st.download_button(
+            "Telecharger en Markdown",
+            data=markdown_content,
+            file_name=f"{Path(uploaded_file.name).stem}.md",
+            mime="text/markdown",
+        )
+        render_normalized_text(markdown_content, uploaded_file.name)
+        return
+
+    st.write("Etape suivante : lecture du contenu et extraction de texte.")
+
+
 def render_home() -> None:
     st.title("AAP Ingenia")
     st.caption("Prototype simple pour cadrer un futur outil d'analyse de dossiers")
@@ -144,101 +274,45 @@ def render_demo_data() -> None:
     st.write(first_row.get("resume_executif", "Aucun resume disponible."))
 
 
-def render_upload() -> None:
-    st.subheader("Upload et lecture simple")
+def render_upload_block(title: str, help_text: str, uploader_key: str) -> None:
+    st.subheader(title)
+    st.caption(help_text)
     uploaded_file = st.file_uploader(
-        "Depose un document de test",
+        f"Depose un document pour : {title}",
         type=["pdf", "docx", "txt", "csv", "xlsx"],
+        key=uploader_key,
     )
 
     if uploaded_file is None:
-        st.info("Aucun document charge pour le moment.")
+        st.info("Aucun document charge pour ce bloc.")
         return
 
-    st.success("Document recu avec succes.")
+    process_uploaded_file(uploaded_file, title)
 
-    col1, col2 = st.columns(2)
-    col1.write(f"Nom : `{uploaded_file.name}`")
-    col2.write(f"Taille : `{uploaded_file.size}` octets")
 
-    suffix = Path(uploaded_file.name).suffix.lower() or "inconnu"
-    st.write(f"Type detecte : `{suffix}`")
+def render_upload() -> None:
+    st.subheader("Upload structure en 3 blocs")
+    st.write(
+        "Le flux metier repose sur trois types de documents distincts : dossier, client et projet."
+    )
 
-    if suffix == ".txt":
-        text_content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
-        render_metadata(extract_text_metadata(text_content, uploaded_file.name))
-        st.markdown("### Apercu texte")
-        st.text_area("Contenu detecte", text_content[:5000], height=250)
-        st.write("Etape suivante : nettoyer et structurer ce texte.")
-        return
-
-    if suffix == ".csv":
-        dataframe = pd.read_csv(uploaded_file)
-        render_metadata(extract_table_metadata(dataframe, uploaded_file.name))
-        st.markdown("### Apercu tabulaire")
-        st.dataframe(dataframe, use_container_width=True)
-        st.write(f"Nombre de lignes : `{len(dataframe)}`")
-        st.write(f"Nombre de colonnes : `{len(dataframe.columns)}`")
-        return
-
-    if suffix == ".xlsx":
-        workbook = pd.read_excel(uploaded_file, sheet_name=None)
-        sheet_names = list(workbook.keys())
-
-        st.markdown("### Feuilles detectees")
-        st.write(", ".join(f"`{name}`" for name in sheet_names))
-
-        selected_sheet = st.selectbox("Choisir une feuille", sheet_names)
-        selected_df = workbook[selected_sheet]
-        csv_content = selected_df.to_csv(index=False)
-        metadata = extract_table_metadata(selected_df, uploaded_file.name)
-        metadata["Feuille selectionnee"] = selected_sheet
-        render_metadata(metadata)
-
-        st.markdown("### Apercu Excel")
-        st.dataframe(selected_df, use_container_width=True)
-        st.write(f"Lignes : `{len(selected_df)}`")
-        st.write(f"Colonnes : `{len(selected_df.columns)}`")
-        st.markdown("### Conversion CSV")
-        st.text_area("CSV genere", csv_content[:5000], height=220)
-        st.download_button(
-            "Telecharger la feuille en CSV",
-            data=csv_content,
-            file_name=f"{Path(uploaded_file.name).stem}_{selected_sheet}.csv",
-            mime="text/csv",
-        )
-        return
-
-    if suffix == ".pdf":
-        st.info("Le PDF est bien recu. L'extraction de texte n'est pas encore active.")
-        st.write("Etape suivante : brancher une extraction de texte PDF.")
-        return
-
-    if suffix == ".docx":
-        document = Document(uploaded_file)
-        paragraphs = [p.text.strip() for p in document.paragraphs if p.text.strip()]
-        text_content = "\n\n".join(paragraphs)
-        markdown_content = docx_to_markdown(document)
-
-        if not text_content:
-            st.warning("Le document DOCX a ete charge, mais aucun texte exploitable n'a ete trouve.")
-            return
-
-        render_metadata(extract_text_metadata(text_content, uploaded_file.name))
-        st.markdown("### Apercu DOCX")
-        st.text_area("Texte detecte", text_content[:5000], height=300)
-        st.write(f"Paragraphes detectes : `{len(paragraphs)}`")
-        st.markdown("### Conversion Markdown")
-        st.text_area("Markdown genere", markdown_content[:5000], height=260)
-        st.download_button(
-            "Telecharger en Markdown",
-            data=markdown_content,
-            file_name=f"{Path(uploaded_file.name).stem}.md",
-            mime="text/markdown",
-        )
-        return
-
-    st.write("Etape suivante : lecture du contenu et extraction de texte.")
+    render_upload_block(
+        "Documents dossier",
+        "Documents cibles a analyser : appel a projets, reglement, cahier des charges, cadre d'intervention.",
+        "upload_dossier",
+    )
+    st.divider()
+    render_upload_block(
+        "Documents client",
+        "Documents qui decrivent la structure porteuse : presentation, statuts, references, plaquette.",
+        "upload_client",
+    )
+    st.divider()
+    render_upload_block(
+        "Documents projet",
+        "Documents qui decrivent l'action ou la demande : note d'intention, budget, description du projet.",
+        "upload_projet",
+    )
 
 
 def main() -> None:
