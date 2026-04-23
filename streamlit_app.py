@@ -524,7 +524,16 @@ def apply_manual_completion(bridge: dict[str, str], overrides: dict[str, str]) -
     completed = dict(bridge)
     for key, value in overrides.items():
         cleaned = value.strip()
-        if cleaned:
+        if not cleaned:
+            continue
+        if "__append__" in key:
+            target_key = key.split("__append__", 1)[0]
+            existing_value = completed.get(target_key, "")
+            if existing_value in {"", "Aucun", "Aucune", "Non detecte", "Non detectee", "A verifier"}:
+                completed[target_key] = cleaned
+            else:
+                completed[target_key] = f"{existing_value} | {cleaned}"
+        else:
             completed[key] = cleaned
     return completed
 
@@ -553,16 +562,167 @@ def format_loaded_documents_label(uploaded_files) -> str:
     return ", ".join(names[:2]) + f" (+{len(names) - 2} autre(s))"
 
 
+def infer_block_document_context(uploaded_files) -> set[str]:
+    context_tags = set()
+    for uploaded_file in uploaded_files:
+        name = uploaded_file.name.lower()
+        if "reglement" in name or "règlement" in name:
+            context_tags.add("reglement")
+        if "appel" in name or "aap" in name or "cahier" in name:
+            context_tags.add("appel")
+        if "formulaire" in name:
+            context_tags.add("formulaire")
+        if "statut" in name:
+            context_tags.add("statuts")
+        if "reference" in name or "référence" in name:
+            context_tags.add("references")
+        if "plaquette" in name or "presentation" in name or "présentation" in name:
+            context_tags.add("presentation")
+        if "budget" in name:
+            context_tags.add("budget")
+        if "planning" in name or "calendrier" in name:
+            context_tags.add("planning")
+        if "projet" in name or "note" in name:
+            context_tags.add("projet")
+    return context_tags
+
+
+def get_dynamic_field_label(section_title: str, field_key: str, context_tags: set[str]) -> str:
+    if section_title == "Documents dossier":
+        if field_key == "type_structure_requise":
+            if "reglement" in context_tags or "appel" in context_tags:
+                return "Structure eligible selon le dossier"
+            return "Type de structure requis"
+        if field_key == "date_limite_dossier":
+            if "formulaire" in context_tags:
+                return "Date limite ou date de depot du formulaire"
+            return "Date limite du dossier"
+        if field_key == "montant_dossier":
+            if "budget" in context_tags:
+                return "Montant, plafond ou enveloppe du dossier"
+            return "Montant ou plafond du dossier"
+        if field_key == "conditions_dossier":
+            if "reglement" in context_tags:
+                return "Conditions d'eligibilite ou pieces du reglement"
+            if "formulaire" in context_tags:
+                return "Champs obligatoires ou pieces du formulaire"
+            return "Conditions ou pieces demandees"
+
+    if section_title == "Documents client":
+        if field_key == "type_structure_client":
+            if "statuts" in context_tags:
+                return "Forme juridique issue des statuts"
+            return "Type de structure du client"
+        if field_key == "identite_client":
+            if "references" in context_tags:
+                return "Activites, references ou experience du client"
+            if "presentation" in context_tags:
+                return "Identite, activite ou presentation du client"
+            return "Identite, activite ou references du client"
+
+    if section_title == "Documents projet":
+        if field_key == "montant_projet":
+            if "budget" in context_tags:
+                return "Montant ou budget du projet"
+            return "Montant du projet"
+        if field_key == "dates_projet":
+            if "planning" in context_tags:
+                return "Dates, planning ou calendrier du projet"
+            return "Dates ou calendrier du projet"
+        if field_key == "elements_projet":
+            if "projet" in context_tags:
+                return "Objectifs, actions ou livrables du projet"
+            return "Elements clefs du projet"
+
+    fallback_labels = {
+        "type_structure_requise": "Type de structure requis",
+        "date_limite_dossier": "Date limite du dossier",
+        "montant_dossier": "Montant du dossier",
+        "conditions_dossier": "Conditions du dossier",
+        "type_structure_client": "Type de structure du client",
+        "identite_client": "Identite du client",
+        "montant_projet": "Montant du projet",
+        "dates_projet": "Dates du projet",
+        "elements_projet": "Elements du projet",
+    }
+    return fallback_labels.get(field_key, field_key)
+
+
+def build_manual_fields_for_section(section_title: str, context_tags: set[str]) -> list[tuple[str, str, str, str, str]]:
+    if section_title == "Documents dossier":
+        fields = [
+            ("type_structure_requise", "type_structure_requise", "text_input", "Type de structure requis", "dossier"),
+            ("date_limite_dossier", "date_limite_dossier", "text_input", "Date limite du dossier", "dossier"),
+            ("montant_dossier", "montant_dossier", "text_input", "Montant ou plafond du dossier", "dossier"),
+            ("conditions_dossier", "conditions_dossier", "text_area", "Conditions ou pieces demandees", "dossier"),
+        ]
+        if "reglement" in context_tags or "appel" in context_tags:
+            fields.extend([
+                ("conditions_dossier__append__public_eligible", "conditions_dossier", "text_input", "Public ou structure eligible", "dossier_public"),
+                ("conditions_dossier__append__pieces_obligatoires", "conditions_dossier", "text_area", "Pieces obligatoires a fournir", "dossier_pieces"),
+            ])
+        if "budget" in context_tags:
+            fields.append(
+                ("conditions_dossier__append__depenses_eligibles", "conditions_dossier", "text_area", "Depenses ou postes eligibles", "dossier_depenses")
+            )
+        if "formulaire" in context_tags:
+            fields.append(
+                ("conditions_dossier__append__rubriques_obligatoires", "conditions_dossier", "text_area", "Rubriques obligatoires du formulaire", "dossier_rubriques")
+            )
+        return fields
+
+    if section_title == "Documents client":
+        fields = [
+            ("type_structure_client", "type_structure_client", "text_input", "Type de structure du client", "client"),
+            ("identite_client", "identite_client", "text_area", "Identite, activite ou references du client", "client"),
+        ]
+        if "statuts" in context_tags:
+            fields.extend([
+                ("identite_client__append__nom_structure", "identite_client", "text_input", "Nom de la structure", "client_nom"),
+                ("identite_client__append__siret", "identite_client", "text_input", "SIRET ou identifiant", "client_siret"),
+            ])
+        if "references" in context_tags:
+            fields.append(
+                ("identite_client__append__references", "identite_client", "text_area", "References ou realisations marquantes", "client_references")
+            )
+        if "presentation" in context_tags:
+            fields.append(
+                ("identite_client__append__domaines", "identite_client", "text_area", "Domaines d'activite ou competences", "client_domaines")
+            )
+        return fields
+
+    if section_title == "Documents projet":
+        fields = [
+            ("montant_projet", "montant_projet", "text_input", "Montant du projet", "projet"),
+            ("dates_projet", "dates_projet", "text_input", "Dates ou calendrier du projet", "projet"),
+            ("elements_projet", "elements_projet", "text_area", "Elements clefs du projet", "projet"),
+        ]
+        if "budget" in context_tags:
+            fields.extend([
+                ("elements_projet__append__cout_total", "elements_projet", "text_input", "Cout total ou budget global", "projet_cout_total"),
+                ("elements_projet__append__cofinancement", "elements_projet", "text_input", "Cofinancement ou autres financeurs", "projet_cofinancement"),
+            ])
+        if "planning" in context_tags:
+            fields.append(
+                ("elements_projet__append__planning", "elements_projet", "text_area", "Etapes ou planning du projet", "projet_planning")
+            )
+        if "projet" in context_tags:
+            fields.append(
+                ("elements_projet__append__beneficiaires", "elements_projet", "text_area", "Public vise, objectifs ou livrables", "projet_beneficiaires")
+            )
+        return fields
+
+    return []
+
+
 def render_dynamic_manual_field(
-    field_key: str,
+    input_key: str,
     field_type: str,
     base_label: str,
-    bridge: dict[str, str],
     source_label: str,
     key_suffix: str,
     height: int = 120,
 ) -> str:
-    current_value = bridge.get(field_key, "")
     input_label = f"{base_label} a completer"
     help_text = f"Source concernee : {source_label}"
 
@@ -570,7 +730,7 @@ def render_dynamic_manual_field(
         return st.text_area(
             input_label,
             value="",
-            key=f"manual_{field_key}_{key_suffix}",
+            key=f"manual_{input_key}_{key_suffix}",
             help=help_text,
             height=height,
             placeholder=f"Saisir {base_label.lower()}",
@@ -579,7 +739,7 @@ def render_dynamic_manual_field(
     return st.text_input(
         input_label,
         value="",
-        key=f"manual_{field_key}_{key_suffix}",
+        key=f"manual_{input_key}_{key_suffix}",
         help=help_text,
         placeholder=f"Saisir {base_label.lower()}",
     )
@@ -594,39 +754,26 @@ def render_manual_completion_widget(bridge: dict[str, str], dossier_files, clien
         (
             "Documents dossier",
             dossier_files,
-            [
-                ("type_structure_requise", "text_input", "Type de structure requis", "dossier"),
-                ("date_limite_dossier", "text_input", "Date limite du dossier", "dossier"),
-                ("montant_dossier", "text_input", "Montant ou plafond du dossier", "dossier"),
-                ("conditions_dossier", "text_area", "Conditions ou pieces demandees", "dossier"),
-            ],
         ),
         (
             "Documents client",
             client_files,
-            [
-                ("type_structure_client", "text_input", "Type de structure du client", "client"),
-                ("identite_client", "text_area", "Identite, activite ou references du client", "client"),
-            ],
         ),
         (
             "Documents projet",
             project_files,
-            [
-                ("montant_projet", "text_input", "Montant du projet", "projet"),
-                ("dates_projet", "text_input", "Dates ou calendrier du projet", "projet"),
-                ("elements_projet", "text_area", "Elements clefs du projet", "projet"),
-            ],
         ),
     ]
 
     displayed_fields = 0
 
-    for section_title, section_files, fields in sections:
+    for section_title, section_files in sections:
         source_label = format_loaded_documents_label(section_files)
+        context_tags = infer_block_document_context(section_files)
+        fields = build_manual_fields_for_section(section_title, context_tags)
         missing_fields = [
             field for field in fields
-            if is_missing_bridge_value(field[0], bridge.get(field[0], ""))
+            if is_missing_bridge_value(field[1], bridge.get(field[1], ""))
         ]
 
         if not missing_fields:
@@ -635,12 +782,14 @@ def render_manual_completion_widget(bridge: dict[str, str], dossier_files, clien
         displayed_fields += len(missing_fields)
         with st.expander(f"{section_title} a completer", expanded=True):
             st.caption(f"Documents charges : {source_label}")
-            for field_key, field_type, base_label, key_suffix in missing_fields:
-                overrides[field_key] = render_dynamic_manual_field(
-                    field_key,
+            for input_key, target_key, field_type, base_label, key_suffix in missing_fields:
+                dynamic_label = get_dynamic_field_label(section_title, target_key, context_tags)
+                if input_key != target_key:
+                    dynamic_label = base_label
+                overrides[input_key] = render_dynamic_manual_field(
+                    input_key,
                     field_type,
-                    base_label,
-                    bridge,
+                    dynamic_label,
                     source_label,
                     key_suffix,
                 )
@@ -661,10 +810,23 @@ def render_bridge_section(bridge: dict[str, str], dossier_files, client_files, p
     return completed_bridge
 
 
-def compute_wf3_local(bridge: dict[str, str]) -> dict[str, str]:
+def split_bridge_items(value: str) -> list[str]:
+    if value in {"", "Aucun", "Aucune", "Non detecte", "Non detectee", "A verifier"}:
+        return []
+    parts = re.split(r"\s*\|\s*|,\s*", value)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def contains_any_keyword(items: list[str], keywords: list[str]) -> bool:
+    normalized_items = " ".join(items).lower()
+    return any(keyword in normalized_items for keyword in keywords)
+
+
+def compute_wf3_local(bridge: dict[str, str], global_bridge: dict[str, str] | None = None) -> dict[str, str]:
     score = 0
     justifications: list[str] = []
     manques: list[str] = []
+    details: list[str] = []
 
     required_structure = bridge.get("type_structure_requise", "A verifier")
     client_structure = bridge.get("type_structure_client", "Non detectee")
@@ -674,47 +836,169 @@ def compute_wf3_local(bridge: dict[str, str]) -> dict[str, str]:
     project_amount = bridge.get("montant_projet", "Non detecte")
     dossier_conditions = bridge.get("conditions_dossier", "Aucune")
     project_elements = bridge.get("elements_projet", "Aucun")
+    client_identity = bridge.get("identite_client", "Aucune")
+
+    condition_items = split_bridge_items(dossier_conditions)
+    project_items = split_bridge_items(project_elements)
+    client_items = split_bridge_items(client_identity)
+
+    structure_status = "a confirmer"
+    calendrier_status = "a confirmer"
+    budget_status = "a confirmer"
+    conditions_status = "a confirmer"
+    capacite_status = "a confirmer"
 
     if required_structure == "A verifier":
         justifications.append("type de structure requis non explicite dans le dossier")
+        details.append("Structure : critere dossier encore flou")
     elif required_structure == client_structure:
         score += 25
         justifications.append("forme juridique client compatible avec le dossier")
+        details.append("Structure : compatibilite detectee entre dossier et client")
+        structure_status = "ok"
     elif client_structure == "Non detectee":
         manques.append("forme juridique client non detectee")
+        details.append("Structure : type client manquant")
+        structure_status = "manquant"
     else:
         score -= 15
         justifications.append("forme juridique client differente de la structure requise")
+        details.append("Structure : ecart entre structure requise et structure client")
+        structure_status = "ecart"
 
     if dossier_date != "Aucune" and project_dates != "Aucune":
         score += 20
         justifications.append("dates presentes des deux cotes")
+        details.append("Calendrier : dossier et projet contiennent des dates")
+        calendrier_status = "ok"
     elif dossier_date != "Aucune" and project_dates == "Aucune":
         manques.append("dates projet absentes alors qu'une date dossier existe")
+        details.append("Calendrier : date dossier detectee mais calendrier projet incomplet")
+        calendrier_status = "manquant"
     else:
         manques.append("date limite dossier non detectee")
+        details.append("Calendrier : date limite dossier absente")
+        calendrier_status = "manquant"
 
     if dossier_amount != "Aucun" and project_amount != "Non detecte":
         score += 20
         justifications.append("montants detectes dans dossier et projet")
+        details.append("Budget : montant dossier et montant projet disponibles")
+        budget_status = "ok"
     elif project_amount != "Non detecte":
         manques.append("montant dossier absent")
+        details.append("Budget : montant projet present mais plafond dossier absent")
+        budget_status = "partiel"
     else:
         manques.append("montant projet absent")
+        details.append("Budget : montant projet non renseigne")
+        budget_status = "manquant"
 
     if dossier_conditions != "Aucune" and project_elements != "Aucun":
         score += 20
         justifications.append("conditions dossier et elements projet disponibles")
+        conditions_status = "ok"
     elif dossier_conditions == "Aucune":
         manques.append("conditions dossier peu structurees")
+        details.append("Conditions : attentes dossier peu structurees")
+        conditions_status = "manquant"
     else:
         manques.append("elements projet peu detectes")
+        details.append("Conditions : projet encore trop peu detaille")
+        conditions_status = "manquant"
 
-    if bridge.get("identite_client", "Aucune") != "Aucune":
+    if client_identity != "Aucune":
         score += 15
         justifications.append("identite ou activite client detectee")
+        details.append("Capacite : client decrit par activites ou references")
+        capacite_status = "ok"
     else:
         manques.append("activite client peu detectee")
+        details.append("Capacite : identite ou experience client insuffisante")
+        capacite_status = "manquant"
+
+    pieces_keywords = ["piece", "pieces", "obligatoire", "rubrique", "formulaire"]
+    if contains_any_keyword(condition_items, pieces_keywords):
+        if project_items or client_items:
+            score += 5
+            justifications.append("pieces ou obligations dossier explicites et blocs repondants presents")
+            details.append("Pieces : dossier explicite des obligations, reponse documentaire disponible")
+        else:
+            manques.append("pieces obligatoires explicites mais peu d'elements en face")
+            details.append("Pieces : obligations detectees sans reponse claire cote client/projet")
+
+    eligibility_keywords = ["eligible", "eligibilite", "association", "entreprise", "public"]
+    if contains_any_keyword(condition_items, eligibility_keywords):
+        if client_structure != "Non detectee" or client_items:
+            score += 5
+            justifications.append("conditions d'eligibilite partiellement comparables au profil client")
+            details.append("Eligibilite : comparaison possible entre criteres dossier et profil client")
+        else:
+            manques.append("criteres d'eligibilite presents mais profil client encore trop faible")
+            details.append("Eligibilite : dossier renseigne, client encore trop peu qualifie")
+
+    budget_keywords = ["budget", "cofinancement", "financement", "cout", "depenses"]
+    if contains_any_keyword(condition_items, budget_keywords) and contains_any_keyword(project_items, budget_keywords):
+        score += 5
+        justifications.append("coherence budgetaire amorcee entre exigences dossier et projet")
+        details.append("Budget fin : mots-cles budgetaires retrouves des deux cotes")
+
+    planning_keywords = ["planning", "calendrier", "date", "etape"]
+    if contains_any_keyword(project_items, planning_keywords) and project_dates != "Aucune":
+        score += 5
+        justifications.append("elements de planning detectes dans le projet")
+        details.append("Calendrier fin : le projet contient des jalons ou etapes")
+
+    contexte_global = "non evalue"
+    fiabilite_globale = "non evaluee"
+    risque_global = "non evalue"
+    actions_globales = "Aucune"
+
+    if global_bridge is not None:
+        etat_global = global_bridge.get("etat_global_documentaire", "inconnu")
+        prescore_global = global_bridge.get("prescore_global_documentaire", "")
+        incoherences_globales = global_bridge.get("incoherences_globales", "Aucune")
+        actions_globales = global_bridge.get("actions_prealables", "Aucune")
+        statut_blocs = global_bridge.get("statut_blocs", "Aucun")
+
+        contexte_global = etat_global
+
+        if "pret pour pre-analyse" in etat_global:
+            score += 10
+            fiabilite_globale = "bonne"
+            details.append("Contexte global : socle documentaire globalement exploitable")
+        elif "partiellement exploitable" in etat_global or "partiellement pret" in etat_global:
+            score += 3
+            fiabilite_globale = "moyenne"
+            details.append("Contexte global : dossier exploitable mais encore incomplet")
+        elif "structure complete mais informations faibles" in etat_global:
+            score -= 8
+            fiabilite_globale = "faible"
+            manques.append("structure presente mais informations globales encore faibles")
+            details.append("Contexte global : structure presente mais signaux documentaires fragiles")
+        else:
+            score -= 12
+            fiabilite_globale = "faible"
+            manques.append("contexte documentaire global insuffisant")
+            details.append("Contexte global : dossier encore trop peu fiable pour un matching fort")
+
+        if "bon" in prescore_global:
+            score += 5
+        elif "faible" in prescore_global:
+            score -= 5
+
+        if incoherences_globales != "Aucune incoherence simple detectee":
+            score -= 10
+            risque_global = "eleve"
+            manques.append("incoherences globales detectees a traiter avant conclusion fiable")
+            details.append(f"Risque global : {incoherences_globales}")
+        elif "partiel" in statut_blocs or "vide" in statut_blocs:
+            score -= 5
+            risque_global = "moyen"
+            details.append("Risque global : au moins un bloc reste partiel ou faible")
+        else:
+            risque_global = "modere"
+            details.append("Risque global : pas d'incoherence simple majeure detectee")
 
     score = max(0, min(score, 100))
 
@@ -730,12 +1014,28 @@ def compute_wf3_local(bridge: dict[str, str]) -> dict[str, str]:
     return {
         "statut": statut,
         "score": f"{score}/100",
+        "structure": structure_status,
+        "calendrier": calendrier_status,
+        "budget": budget_status,
+        "conditions": conditions_status,
+        "capacite": capacite_status,
+        "contexte_global": contexte_global,
+        "fiabilite_globale": fiabilite_globale,
+        "risque_global": risque_global,
         "justifications": " | ".join(justifications) if justifications else "Aucune justification forte",
         "manques": " | ".join(manques) if manques else "Aucun manque majeur detecte",
+        "details": " | ".join(details) if details else "Aucun detail fin disponible",
+        "actions_globales": actions_globales,
     }
 
 
-def render_wf3_section(dossier_files, client_files, project_files, bridge: dict[str, str] | None = None) -> None:
+def render_wf3_section(
+    dossier_files,
+    client_files,
+    project_files,
+    bridge: dict[str, str] | None = None,
+    global_bridge: dict[str, str] | None = None,
+) -> None:
     st.subheader("WF3 local - Matching dossier / client / projet")
 
     if not dossier_files or not client_files or not project_files:
@@ -744,17 +1044,37 @@ def render_wf3_section(dossier_files, client_files, project_files, bridge: dict[
 
     if bridge is None:
         bridge = build_comparable_bridge(dossier_files, client_files, project_files)
-    wf3 = compute_wf3_local(bridge)
+    wf3 = compute_wf3_local(bridge, global_bridge=global_bridge)
 
     col1, col2 = st.columns(2)
     col1.metric("Statut", wf3["statut"])
     col2.metric("Score local", wf3["score"])
+
+    st.markdown("### Controles fins")
+    fine_col1, fine_col2, fine_col3, fine_col4, fine_col5 = st.columns(5)
+    fine_col1.metric("Structure", wf3["structure"])
+    fine_col2.metric("Calendrier", wf3["calendrier"])
+    fine_col3.metric("Budget", wf3["budget"])
+    fine_col4.metric("Conditions", wf3["conditions"])
+    fine_col5.metric("Capacite", wf3["capacite"])
+
+    st.markdown("### Contexte global integre")
+    global_col1, global_col2, global_col3 = st.columns(3)
+    global_col1.metric("Contexte global", wf3["contexte_global"])
+    global_col2.metric("Fiabilite globale", wf3["fiabilite_globale"])
+    global_col3.metric("Risque global", wf3["risque_global"])
 
     st.markdown("### Justifications")
     st.write(wf3["justifications"])
 
     st.markdown("### Manques a combler")
     st.write(wf3["manques"])
+
+    st.markdown("### Actions globales prealables")
+    st.write(wf3["actions_globales"])
+
+    with st.expander("Voir le detail des comparaisons fines", expanded=False):
+        st.write(wf3["details"])
 
 
 def collect_block_insights(uploaded_files) -> dict[str, str]:
@@ -985,6 +1305,88 @@ def render_cross_block_summary(summary: dict[str, str]) -> None:
         st.write(f"**Organismes par bloc** : {summary.get('Organismes par bloc', 'Aucun')}")
         st.write(f"**Dates par bloc** : {summary.get('Dates par bloc', 'Aucune')}")
         st.write(f"**Montants par bloc** : {summary.get('Montants par bloc', 'Aucun')}")
+
+
+def build_global_context_bridge(
+    block_files_map: dict[str, list],
+    cross_summary: dict[str, str],
+    local_bridge: dict[str, str],
+) -> dict[str, str]:
+    dossier_insights = collect_block_insights(block_files_map.get("Documents dossier", [])) if block_files_map.get("Documents dossier") else {}
+    client_insights = collect_block_insights(block_files_map.get("Documents client", [])) if block_files_map.get("Documents client") else {}
+    project_insights = collect_block_insights(block_files_map.get("Documents projet", [])) if block_files_map.get("Documents projet") else {}
+
+    return {
+        "etat_global_documentaire": cross_summary.get("Etat global", "inconnu"),
+        "prescore_global_documentaire": cross_summary.get("Pre-score global", "inconnu"),
+        "blocs_disponibles": cross_summary.get("Blocs disponibles", "Aucun"),
+        "blocs_manquants": cross_summary.get("Blocs manquants", "Aucun"),
+        "statut_blocs": cross_summary.get("Statut des blocs", "Aucun"),
+        "incoherences_globales": cross_summary.get("Incoherences detectees", "Aucune"),
+        "controle_global": cross_summary.get("Controle simple", "Aucun"),
+        "actions_prealables": " | ".join(
+            [
+                cross_summary.get("Action dossier", "Aucune"),
+                cross_summary.get("Action client", "Aucune"),
+                cross_summary.get("Action projet", "Aucune"),
+            ]
+        ),
+        "priorite_date": cross_summary.get("Date prioritaire", "Aucune"),
+        "priorite_organisme": cross_summary.get("Organisme prioritaire", "Aucun"),
+        "priorite_montant": cross_summary.get("Montant prioritaire", "Aucun"),
+        "fiabilite_dossier": cross_summary.get("Criteres dossier", "Aucun"),
+        "fiabilite_client": cross_summary.get("Criteres client", "Aucun"),
+        "fiabilite_projet": cross_summary.get("Criteres projet", "Aucun"),
+        "provenance_dossier": dossier_insights.get("Provenance synthese", "Aucune"),
+        "provenance_client": client_insights.get("Provenance synthese", "Aucune"),
+        "provenance_projet": project_insights.get("Provenance synthese", "Aucune"),
+        "mots_cles_dossier": dossier_insights.get("Mots-cles simples", "Aucun"),
+        "mots_cles_client": client_insights.get("Mots-cles simples", "Aucun"),
+        "mots_cles_projet": project_insights.get("Mots-cles simples", "Aucun"),
+        "resume_pont_metier": " | ".join(
+            [
+                f"Structure requise: {local_bridge.get('type_structure_requise', 'A verifier')}",
+                f"Structure client: {local_bridge.get('type_structure_client', 'Non detectee')}",
+                f"Date dossier: {local_bridge.get('date_limite_dossier', 'Aucune')}",
+                f"Dates projet: {local_bridge.get('dates_projet', 'Aucune')}",
+                f"Montant dossier: {local_bridge.get('montant_dossier', 'Aucun')}",
+                f"Montant projet: {local_bridge.get('montant_projet', 'Non detecte')}",
+            ]
+        ),
+    }
+
+
+def render_global_context_bridge(global_bridge: dict[str, str]) -> None:
+    st.subheader("Pont global - Contexte documentaire et fiabilite")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Etat global", global_bridge.get("etat_global_documentaire", "inconnu"))
+    col2.metric("Pre-score documentaire", global_bridge.get("prescore_global_documentaire", "inconnu"))
+    col3.metric("Blocs disponibles", global_bridge.get("blocs_disponibles", "Aucun"))
+
+    st.markdown("### Contexte global")
+    st.write(f"**Blocs manquants** : {global_bridge.get('blocs_manquants', 'Aucun')}")
+    st.write(f"**Statut des blocs** : {global_bridge.get('statut_blocs', 'Aucun')}")
+    st.write(f"**Controle global** : {global_bridge.get('controle_global', 'Aucun')}")
+    st.write(f"**Incoherences globales** : {global_bridge.get('incoherences_globales', 'Aucune')}")
+
+    st.markdown("### Priorites et fiabilite")
+    st.write(f"**Priorite date** : {global_bridge.get('priorite_date', 'Aucune')}")
+    st.write(f"**Priorite organisme** : {global_bridge.get('priorite_organisme', 'Aucun')}")
+    st.write(f"**Priorite montant** : {global_bridge.get('priorite_montant', 'Aucun')}")
+    st.write(f"**Fiabilite dossier** : {global_bridge.get('fiabilite_dossier', 'Aucun')}")
+    st.write(f"**Fiabilite client** : {global_bridge.get('fiabilite_client', 'Aucun')}")
+    st.write(f"**Fiabilite projet** : {global_bridge.get('fiabilite_projet', 'Aucun')}")
+
+    with st.expander("Voir la provenance et le contexte fin", expanded=False):
+        st.write(f"**Provenance dossier** : {global_bridge.get('provenance_dossier', 'Aucune')}")
+        st.write(f"**Provenance client** : {global_bridge.get('provenance_client', 'Aucune')}")
+        st.write(f"**Provenance projet** : {global_bridge.get('provenance_projet', 'Aucune')}")
+        st.write(f"**Mots-cles dossier** : {global_bridge.get('mots_cles_dossier', 'Aucun')}")
+        st.write(f"**Mots-cles client** : {global_bridge.get('mots_cles_client', 'Aucun')}")
+        st.write(f"**Mots-cles projet** : {global_bridge.get('mots_cles_projet', 'Aucun')}")
+        st.write(f"**Resume pont metier** : {global_bridge.get('resume_pont_metier', 'Aucun')}")
+        st.write(f"**Actions prealables** : {global_bridge.get('actions_prealables', 'Aucune')}")
 
 
 def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[str, str]:
