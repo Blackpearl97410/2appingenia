@@ -119,7 +119,7 @@ def process_uploaded_file(uploaded_file, category_label: str) -> None:
     suffix = Path(uploaded_file.name).suffix.lower() or "inconnu"
     st.write(f"Type detecte : `{suffix}`")
 
-    if suffix == ".txt":
+    if suffix in {".txt", ".md"}:
         text_content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
         render_metadata(extract_text_metadata(text_content, uploaded_file.name))
         st.markdown("### Apercu texte")
@@ -279,7 +279,7 @@ def render_upload_block(title: str, help_text: str, uploader_key: str) -> None:
     st.caption(help_text)
     uploaded_file = st.file_uploader(
         f"Depose un document pour : {title}",
-        type=["pdf", "docx", "txt", "csv", "xlsx"],
+        type=["pdf", "docx", "txt", "md", "csv", "xlsx"],
         key=uploader_key,
     )
 
