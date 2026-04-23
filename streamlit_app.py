@@ -1409,16 +1409,18 @@ def render_upload() -> None:
         block_files_map["Documents projet"],
     )
     st.divider()
-    render_bridge_section(
+    bridge = build_comparable_bridge(
         block_files_map["Documents dossier"],
         block_files_map["Documents client"],
         block_files_map["Documents projet"],
     )
+    completed_bridge = render_bridge_section(bridge)
     st.divider()
     render_wf3_section(
         block_files_map["Documents dossier"],
         block_files_map["Documents client"],
         block_files_map["Documents projet"],
+        bridge=completed_bridge,
     )
 
 
