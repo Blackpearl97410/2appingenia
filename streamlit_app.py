@@ -118,26 +118,26 @@ def build_upload_summary(uploaded_file) -> dict[str, str]:
     }
 
 
-def render_global_summary(summary_map: dict[str, dict[str, str] | None]) -> None:
+def render_global_summary(summary_map: dict[str, list[dict[str, str]]]) -> None:
     st.subheader("Recapitulatif global")
     col1, col2, col3 = st.columns(3)
 
-    loaded_count = sum(1 for value in summary_map.values() if value is not None)
+    loaded_count = sum(1 for value in summary_map.values() if value)
     col1.metric("Blocs complets", str(loaded_count))
     col2.metric("Blocs manquants", str(len(summary_map) - loaded_count))
-    col3.metric("Cible", "3 uploads")
+    col3.metric("Documents charges", str(sum(len(value) for value in summary_map.values())))
 
-    for block_name, info in summary_map.items():
-        if info is None:
+    for block_name, infos in summary_map.items():
+        if not infos:
             st.warning(f"{block_name} : aucun document charge")
         else:
-            st.success(
-                f"{block_name} : {info['Nom']} | {info['Type']} | {info['Taille']}"
-            )
+            st.success(f"{block_name} : {len(infos)} document(s)")
+            for info in infos:
+                st.write(f"- {info['Nom']} | {info['Type']} | {info['Taille']}")
 
 
-def process_uploaded_file(uploaded_file, category_label: str) -> None:
-    st.markdown(f"## {category_label}")
+def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -> None:
+    st.markdown(f"### {category_label} - fichier {file_index}")
     st.success("Document recu avec succes.")
 
     col1, col2 = st.columns(2)
@@ -302,21 +302,28 @@ def render_demo_data() -> None:
     st.write(first_row.get("resume_executif", "Aucun resume disponible."))
 
 
-def render_upload_block(title: str, help_text: str, uploader_key: str) -> None:
+def render_upload_block(title: str, help_text: str, uploader_key: str) -> list[dict[str, str]]:
     st.subheader(title)
     st.caption(help_text)
-    uploaded_file = st.file_uploader(
-        f"Depose un document pour : {title}",
+    uploaded_files = st.file_uploader(
+        f"Depose un ou plusieurs documents pour : {title}",
         type=["pdf", "docx", "txt", "md", "csv", "xlsx"],
         key=uploader_key,
+        accept_multiple_files=True,
     )
 
-    if uploaded_file is None:
+    if not uploaded_files:
         st.info("Aucun document charge pour ce bloc.")
-        return None
+        return []
 
-    process_uploaded_file(uploaded_file, title)
-    return build_upload_summary(uploaded_file)
+    summaries = []
+    for index, uploaded_file in enumerate(uploaded_files, start=1):
+        process_uploaded_file(uploaded_file, title, index)
+        summaries.append(build_upload_summary(uploaded_file))
+        if index < len(uploaded_files):
+            st.divider()
+
+    return summaries
 
 
 def render_upload() -> None:
