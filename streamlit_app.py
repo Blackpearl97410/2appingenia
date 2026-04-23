@@ -527,6 +527,101 @@ def render_bridge_section(dossier_files, client_files, project_files) -> None:
     render_metadata(bridge)
 
 
+def compute_wf3_local(bridge: dict[str, str]) -> dict[str, str]:
+    score = 0
+    justifications: list[str] = []
+    manques: list[str] = []
+
+    required_structure = bridge.get("type_structure_requise", "A verifier")
+    client_structure = bridge.get("type_structure_client", "Non detectee")
+    dossier_date = bridge.get("date_limite_dossier", "Aucune")
+    project_dates = bridge.get("dates_projet", "Aucune")
+    dossier_amount = bridge.get("montant_dossier", "Aucun")
+    project_amount = bridge.get("montant_projet", "Non detecte")
+    dossier_conditions = bridge.get("conditions_dossier", "Aucune")
+    project_elements = bridge.get("elements_projet", "Aucun")
+
+    if required_structure == "A verifier":
+        justifications.append("type de structure requis non explicite dans le dossier")
+    elif required_structure == client_structure:
+        score += 25
+        justifications.append("forme juridique client compatible avec le dossier")
+    elif client_structure == "Non detectee":
+        manques.append("forme juridique client non detectee")
+    else:
+        score -= 15
+        justifications.append("forme juridique client differente de la structure requise")
+
+    if dossier_date != "Aucune" and project_dates != "Aucune":
+        score += 20
+        justifications.append("dates presentes des deux cotes")
+    elif dossier_date != "Aucune" and project_dates == "Aucune":
+        manques.append("dates projet absentes alors qu'une date dossier existe")
+    else:
+        manques.append("date limite dossier non detectee")
+
+    if dossier_amount != "Aucun" and project_amount != "Non detecte":
+        score += 20
+        justifications.append("montants detectes dans dossier et projet")
+    elif project_amount != "Non detecte":
+        manques.append("montant dossier absent")
+    else:
+        manques.append("montant projet absent")
+
+    if dossier_conditions != "Aucune" and project_elements != "Aucun":
+        score += 20
+        justifications.append("conditions dossier et elements projet disponibles")
+    elif dossier_conditions == "Aucune":
+        manques.append("conditions dossier peu structurees")
+    else:
+        manques.append("elements projet peu detectes")
+
+    if bridge.get("identite_client", "Aucune") != "Aucune":
+        score += 15
+        justifications.append("identite ou activite client detectee")
+    else:
+        manques.append("activite client peu detectee")
+
+    score = max(0, min(score, 100))
+
+    if score >= 75:
+        statut = "compatible"
+    elif score >= 50:
+        statut = "a confirmer"
+    elif score >= 25:
+        statut = "partiellement compatible"
+    else:
+        statut = "non compatible"
+
+    return {
+        "statut": statut,
+        "score": f"{score}/100",
+        "justifications": " | ".join(justifications) if justifications else "Aucune justification forte",
+        "manques": " | ".join(manques) if manques else "Aucun manque majeur detecte",
+    }
+
+
+def render_wf3_section(dossier_files, client_files, project_files) -> None:
+    st.subheader("WF3 local - Matching dossier / client / projet")
+
+    if not dossier_files or not client_files or not project_files:
+        st.info("Le WF3 local demande des documents dans les 3 blocs : dossier, client et projet.")
+        return
+
+    bridge = build_comparable_bridge(dossier_files, client_files, project_files)
+    wf3 = compute_wf3_local(bridge)
+
+    col1, col2 = st.columns(2)
+    col1.metric("Statut", wf3["statut"])
+    col2.metric("Score local", wf3["score"])
+
+    st.markdown("### Justifications")
+    st.write(wf3["justifications"])
+
+    st.markdown("### Manques a combler")
+    st.write(wf3["manques"])
+
+
 def collect_block_insights(uploaded_files) -> dict[str, str]:
     dates: dict[str, set[str]] = {}
     amounts: dict[str, set[str]] = {}
@@ -1241,6 +1336,12 @@ def render_upload() -> None:
     )
     st.divider()
     render_bridge_section(
+        block_files_map["Documents dossier"],
+        block_files_map["Documents client"],
+        block_files_map["Documents projet"],
+    )
+    st.divider()
+    render_wf3_section(
         block_files_map["Documents dossier"],
         block_files_map["Documents client"],
         block_files_map["Documents projet"],
