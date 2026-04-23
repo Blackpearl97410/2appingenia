@@ -393,7 +393,16 @@ def collect_block_insights(uploaded_files) -> dict[str, str]:
 
 def dataframe_to_markdown(dataframe: pd.DataFrame, title: str) -> str:
     preview_df = dataframe.head(20).fillna("")
-    table_markdown = preview_df.to_markdown(index=False)
+    headers = [str(col) for col in preview_df.columns]
+    header_row = "| " + " | ".join(headers) + " |"
+    separator_row = "| " + " | ".join(["---"] * len(headers)) + " |"
+
+    body_rows = []
+    for row in preview_df.itertuples(index=False, name=None):
+        values = [str(value).replace("\n", " ").strip() for value in row]
+        body_rows.append("| " + " | ".join(values) + " |")
+
+    table_markdown = "\n".join([header_row, separator_row] + body_rows)
     return f"## {title}\n\n{table_markdown}"
 
 
