@@ -170,20 +170,14 @@ def choose_priority_value(block_candidates: dict[str, str], priority_order: list
 
 def compute_global_prescore(
     available_blocks: list[str],
-    block_statuses: dict[str, str],
-    organizations: dict[str, str],
-    dates: dict[str, str],
-    amounts: dict[str, str],
+    block_criteria_scores: dict[str, int],
     issues: list[str],
 ) -> tuple[str, str]:
     score = 0
 
-    score += len(available_blocks) * 20
-    score += sum(10 for status in block_statuses.values() if status == "suffisant")
-    score += min(len(organizations), 3) * 10
-    score += min(len(dates), 3) * 8
-    score += min(len(amounts), 3) * 8
-    score -= min(len(issues), 5) * 8
+    score += len(available_blocks) * 10
+    score += sum(min(points, 30) for points in block_criteria_scores.values())
+    score -= min(len(issues), 6) * 10
 
     score = max(0, min(score, 100))
 
@@ -214,6 +208,91 @@ def extract_keywords_from_text(text: str) -> list[str]:
         if len(filtered) >= 20:
             break
     return filtered
+
+
+def aggregate_block_text(uploaded_files) -> str:
+    chunks = []
+    for uploaded_file in uploaded_files:
+        suffix = get_uploaded_suffix(uploaded_file)
+        file_bytes = get_uploaded_bytes(uploaded_file)
+
+        if suffix in {".txt", ".md"}:
+            chunks.append(parse_text_bytes(file_bytes))
+        elif suffix == ".docx":
+            text_content, _, _ = parse_docx_bytes(file_bytes)
+            chunks.append(text_content)
+        elif suffix == ".pdf":
+            pdf_text, _, _, _ = parse_pdf_bytes(file_bytes)
+            chunks.append(pdf_text)
+        elif suffix == ".csv":
+            dataframe = parse_csv_bytes(file_bytes)
+            chunks.append(" ".join(str(col) for col in dataframe.columns))
+        elif suffix == ".xlsx":
+            workbook = parse_excel_bytes(file_bytes)
+            for sheet_name, sheet_df in workbook.items():
+                chunks.append(sheet_name)
+                chunks.append(" ".join(str(col) for col in sheet_df.columns))
+
+    return "\n".join(chunk for chunk in chunks if chunk).lower()
+
+
+def evaluate_block_criteria(block_name: str, uploaded_files, insights: dict[str, str]) -> dict[str, str | int]:
+    text = aggregate_block_text(uploaded_files)
+    dates_value = insights.get("Dates reperees", "Aucune")
+    org_value = insights.get("Organismes reperes", "Aucun")
+    amount_value = insights.get("Montants reperes", "Aucun")
+
+    checks: list[str] = []
+    score = 0
+
+    def add_check(condition: bool, label: str) -> None:
+        nonlocal score
+        if condition:
+            checks.append(label)
+            score += 10
+
+    if block_name == "Documents dossier":
+        add_check(dates_value != "Aucune", "date de reference detectee")
+        add_check(org_value != "Aucun", "organisme detecte")
+        add_check(
+            any(keyword in text for keyword in ["appel", "aap", "reglement", "cadre", "eligibilite", "candidature"]),
+            "regles ou contexte d'appel detectes",
+        )
+    elif block_name == "Documents client":
+        add_check(org_value != "Aucun", "identite de structure detectee")
+        add_check(
+            any(keyword in text for keyword in ["siret", "association", "sas", "sarl", "statuts", "adresse", "siege"]),
+            "elements administratifs detectes",
+        )
+        add_check(
+            any(keyword in text for keyword in ["activite", "presentation", "reference", "competence", "experience"]),
+            "elements de presentation detectes",
+        )
+    elif block_name == "Documents projet":
+        add_check(amount_value != "Aucun", "montant ou budget detecte")
+        add_check(
+            any(keyword in text for keyword in ["projet", "objectif", "action", "planning", "calendrier", "beneficiaire"]),
+            "contenu projet detecte",
+        )
+        add_check(
+            any(keyword in text for keyword in ["budget", "financement", "depense", "cout", "recette"]),
+            "elements budgetaires detectes",
+        )
+
+    if score >= 30:
+        status = "fort"
+    elif score >= 20:
+        status = "moyen"
+    elif score >= 10:
+        status = "faible"
+    else:
+        status = "insuffisant"
+
+    return {
+        "score": score,
+        "status": status,
+        "checks": " | ".join(checks) if checks else "aucun critere fort detecte",
+    }
 
 
 def collect_block_insights(uploaded_files) -> dict[str, str]:
@@ -369,6 +448,14 @@ def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[s
         name: collect_block_insights(files) if files else {}
         for name, files in block_files_map.items()
     }
+    block_criteria = {
+        name: evaluate_block_criteria(name, files, block_insights.get(name, {})) if files else {
+            "score": 0,
+            "status": "insuffisant",
+            "checks": "bloc vide",
+        }
+        for name, files in block_files_map.items()
+    }
 
     organizations = {}
     dates = {}
@@ -391,10 +478,15 @@ def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[s
         if amount_value != "Aucun":
             amounts[block_name] = amount_value
 
-    detected_signal_count = len(organizations) + len(dates) + len(amounts)
+    strong_blocks = [
+        name for name, criteria in block_criteria.items()
+        if criteria.get("status") in {"fort", "moyen"}
+    ]
 
-    if len(available_blocks) == 3 and detected_signal_count >= 4:
+    if len(available_blocks) == 3 and len(strong_blocks) == 3:
         readiness = "pret pour pre-analyse"
+    elif len(available_blocks) == 3 and len(strong_blocks) >= 2:
+        readiness = "partiellement exploitable"
     elif len(available_blocks) == 3:
         readiness = "structure complete mais informations faibles"
     elif len(available_blocks) == 2:
@@ -415,6 +507,13 @@ def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[s
     weak_blocks = [name for name, status in block_statuses.items() if status != "suffisant"]
     if weak_blocks:
         issues.append("blocs a renforcer : " + ", ".join(weak_blocks))
+
+    low_criteria_blocks = [
+        name for name, criteria in block_criteria.items()
+        if criteria.get("status") in {"faible", "insuffisant"}
+    ]
+    if low_criteria_blocks:
+        issues.append("criteres insuffisamment identifies dans : " + ", ".join(low_criteria_blocks))
 
     if "Documents dossier" in dates and "Documents projet" not in dates:
         issues.append("date detectee dans le dossier mais absente du projet")
@@ -444,10 +543,7 @@ def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[s
 
     prescore_label, prescore_value = compute_global_prescore(
         available_blocks=available_blocks,
-        block_statuses=block_statuses,
-        organizations=organizations,
-        dates=dates,
-        amounts=amounts,
+        block_criteria_scores={name: int(criteria.get("score", 0)) for name, criteria in block_criteria.items()},
         issues=issues,
     )
 
@@ -457,6 +553,9 @@ def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[s
         "Blocs disponibles": ", ".join(available_blocks) if available_blocks else "Aucun",
         "Blocs manquants": ", ".join(missing_blocks) if missing_blocks else "Aucun",
         "Statut des blocs": " | ".join(f"{k}: {v}" for k, v in block_statuses.items()),
+        "Criteres dossier": f"{block_criteria['Documents dossier']['status']} ({block_criteria['Documents dossier']['score']}/30) - {block_criteria['Documents dossier']['checks']}",
+        "Criteres client": f"{block_criteria['Documents client']['status']} ({block_criteria['Documents client']['score']}/30) - {block_criteria['Documents client']['checks']}",
+        "Criteres projet": f"{block_criteria['Documents projet']['status']} ({block_criteria['Documents projet']['score']}/30) - {block_criteria['Documents projet']['checks']}",
         "Date prioritaire": choose_priority_value(dates, dossier_priority),
         "Organisme prioritaire": choose_priority_value(organizations, client_priority),
         "Montant prioritaire": choose_priority_value(amounts, project_priority),
