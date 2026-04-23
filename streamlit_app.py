@@ -311,6 +311,58 @@ def render_global_summary(summary_map: dict[str, list[dict[str, str]]]) -> None:
                 st.write(f"- {info['Nom']} | {info['Type']} | {info['Taille']}")
 
 
+def build_global_cross_block_summary(block_files_map: dict[str, list]) -> dict[str, str]:
+    available_blocks = [name for name, files in block_files_map.items() if files]
+    missing_blocks = [name for name, files in block_files_map.items() if not files]
+
+    block_insights = {
+        name: collect_block_insights(files) if files else {}
+        for name, files in block_files_map.items()
+    }
+
+    organizations = {}
+    dates = {}
+    amounts = {}
+
+    for block_name, insights in block_insights.items():
+        if not insights:
+            continue
+        org_value = insights.get("Organismes reperes", "Aucun")
+        date_value = insights.get("Dates reperees", "Aucune")
+        amount_value = insights.get("Montants reperes", "Aucun")
+        if org_value != "Aucun":
+            organizations[block_name] = org_value
+        if date_value != "Aucune":
+            dates[block_name] = date_value
+        if amount_value != "Aucun":
+            amounts[block_name] = amount_value
+
+    if len(available_blocks) == 3:
+        readiness = "pret pour pre-analyse"
+    elif len(available_blocks) == 2:
+        readiness = "partiellement pret"
+    else:
+        readiness = "insuffisant pour comparaison"
+
+    checks = []
+    if "Documents dossier" in organizations and "Documents projet" in organizations:
+        checks.append("dossier/projet : organismes detectes disponibles")
+    if "Documents client" in available_blocks and "Documents projet" in available_blocks:
+        checks.append("client/projet : comparaison possible")
+    if missing_blocks:
+        checks.append("blocs manquants : " + ", ".join(missing_blocks))
+
+    return {
+        "Etat global": readiness,
+        "Blocs disponibles": ", ".join(available_blocks) if available_blocks else "Aucun",
+        "Blocs manquants": ", ".join(missing_blocks) if missing_blocks else "Aucun",
+        "Organismes par bloc": " | ".join(f"{k}: {v}" for k, v in organizations.items()) if organizations else "Aucun",
+        "Dates par bloc": " | ".join(f"{k}: {v}" for k, v in dates.items()) if dates else "Aucune",
+        "Montants par bloc": " | ".join(f"{k}: {v}" for k, v in amounts.items()) if amounts else "Aucun",
+        "Controle simple": " | ".join(checks) if checks else "Aucun controle disponible",
+    }
+
+
 def assess_block_completeness(uploaded_files) -> dict[str, str]:
     if not uploaded_files:
         return {
@@ -556,7 +608,7 @@ def render_demo_data() -> None:
     st.write(first_row.get("resume_executif", "Aucun resume disponible."))
 
 
-def render_upload_block(title: str, help_text: str, uploader_key: str) -> list[dict[str, str]]:
+def render_upload_block(title: str, help_text: str, uploader_key: str):
     st.subheader(title)
     st.caption(help_text)
     uploaded_files = st.file_uploader(
@@ -570,10 +622,8 @@ def render_upload_block(title: str, help_text: str, uploader_key: str) -> list[d
         st.info("Aucun document charge pour ce bloc.")
         return []
 
-    summaries = []
     for index, uploaded_file in enumerate(uploaded_files, start=1):
         process_uploaded_file(uploaded_file, title, index)
-        summaries.append(build_upload_summary(uploaded_file))
         if index < len(uploaded_files):
             st.divider()
 
@@ -582,7 +632,7 @@ def render_upload_block(title: str, help_text: str, uploader_key: str) -> list[d
     block_normalized_text = build_block_normalized_text(title, uploaded_files)
     render_normalized_text(block_normalized_text, title.replace(" ", "_").lower())
 
-    return summaries
+    return uploaded_files
 
 
 def render_upload() -> None:
@@ -592,26 +642,39 @@ def render_upload() -> None:
     )
 
     summary_map = {}
+    block_files_map = {}
 
-    summary_map["Documents dossier"] = render_upload_block(
+    block_files_map["Documents dossier"] = render_upload_block(
         "Documents dossier",
         "Documents cibles a analyser : appel a projets, reglement, cahier des charges, cadre d'intervention.",
         "upload_dossier",
     )
+    summary_map["Documents dossier"] = [
+        build_upload_summary(uploaded_file) for uploaded_file in block_files_map["Documents dossier"]
+    ]
     st.divider()
-    summary_map["Documents client"] = render_upload_block(
+    block_files_map["Documents client"] = render_upload_block(
         "Documents client",
         "Documents qui decrivent la structure porteuse : presentation, statuts, references, plaquette.",
         "upload_client",
     )
+    summary_map["Documents client"] = [
+        build_upload_summary(uploaded_file) for uploaded_file in block_files_map["Documents client"]
+    ]
     st.divider()
-    summary_map["Documents projet"] = render_upload_block(
+    block_files_map["Documents projet"] = render_upload_block(
         "Documents projet",
         "Documents qui decrivent l'action ou la demande : note d'intention, budget, description du projet.",
         "upload_projet",
     )
+    summary_map["Documents projet"] = [
+        build_upload_summary(uploaded_file) for uploaded_file in block_files_map["Documents projet"]
+    ]
     st.divider()
     render_global_summary(summary_map)
+    st.divider()
+    st.subheader("Synthese globale inter-blocs")
+    render_metadata(build_global_cross_block_summary(block_files_map))
 
 
 def main() -> None:
