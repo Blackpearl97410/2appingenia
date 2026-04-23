@@ -529,72 +529,133 @@ def apply_manual_completion(bridge: dict[str, str], overrides: dict[str, str]) -
     return completed
 
 
-def render_manual_completion_widget(bridge: dict[str, str]) -> dict[str, str]:
+def is_missing_bridge_value(field_key: str, value: str) -> bool:
+    missing_values = {
+        "type_structure_requise": {"A verifier", ""},
+        "date_limite_dossier": {"Aucune", ""},
+        "montant_dossier": {"Aucun", ""},
+        "conditions_dossier": {"Aucune", ""},
+        "type_structure_client": {"Non detectee", ""},
+        "identite_client": {"Aucune", ""},
+        "montant_projet": {"Non detecte", ""},
+        "dates_projet": {"Aucune", ""},
+        "elements_projet": {"Aucun", ""},
+    }
+    return value in missing_values.get(field_key, {""})
+
+
+def format_loaded_documents_label(uploaded_files) -> str:
+    if not uploaded_files:
+        return "aucun document charge"
+    names = [uploaded_file.name for uploaded_file in uploaded_files]
+    if len(names) <= 2:
+        return ", ".join(names)
+    return ", ".join(names[:2]) + f" (+{len(names) - 2} autre(s))"
+
+
+def render_dynamic_manual_field(
+    field_key: str,
+    field_type: str,
+    base_label: str,
+    bridge: dict[str, str],
+    source_label: str,
+    key_suffix: str,
+    height: int = 120,
+) -> str:
+    current_value = bridge.get(field_key, "")
+    input_label = f"{base_label} a completer"
+    help_text = f"Source concernee : {source_label}"
+
+    if field_type == "text_area":
+        return st.text_area(
+            input_label,
+            value="",
+            key=f"manual_{field_key}_{key_suffix}",
+            help=help_text,
+            height=height,
+            placeholder=f"Saisir {base_label.lower()}",
+        )
+
+    return st.text_input(
+        input_label,
+        value="",
+        key=f"manual_{field_key}_{key_suffix}",
+        help=help_text,
+        placeholder=f"Saisir {base_label.lower()}",
+    )
+
+
+def render_manual_completion_widget(bridge: dict[str, str], dossier_files, client_files, project_files) -> dict[str, str]:
     st.markdown("### Completion manuelle des donnees manquantes")
-    st.caption("Tu peux corriger ou completer les champs ci-dessous. Les valeurs saisies seront utilisees pour le WF3 local.")
+    st.caption("Le widget s'adapte aux blocs charges et ne propose que les informations encore manquantes ou trop faibles pour le WF3 local.")
 
-    col1, col2 = st.columns(2)
     overrides = {}
+    sections = [
+        (
+            "Documents dossier",
+            dossier_files,
+            [
+                ("type_structure_requise", "text_input", "Type de structure requis", "dossier"),
+                ("date_limite_dossier", "text_input", "Date limite du dossier", "dossier"),
+                ("montant_dossier", "text_input", "Montant ou plafond du dossier", "dossier"),
+                ("conditions_dossier", "text_area", "Conditions ou pieces demandees", "dossier"),
+            ],
+        ),
+        (
+            "Documents client",
+            client_files,
+            [
+                ("type_structure_client", "text_input", "Type de structure du client", "client"),
+                ("identite_client", "text_area", "Identite, activite ou references du client", "client"),
+            ],
+        ),
+        (
+            "Documents projet",
+            project_files,
+            [
+                ("montant_projet", "text_input", "Montant du projet", "projet"),
+                ("dates_projet", "text_input", "Dates ou calendrier du projet", "projet"),
+                ("elements_projet", "text_area", "Elements clefs du projet", "projet"),
+            ],
+        ),
+    ]
 
-    with col1:
-        overrides["type_structure_requise"] = st.text_input(
-            "Type de structure requise",
-            value="" if bridge.get("type_structure_requise") == "A verifier" else bridge.get("type_structure_requise", ""),
-            key="manual_type_structure_requise",
-        )
-        overrides["date_limite_dossier"] = st.text_input(
-            "Date limite dossier",
-            value="" if bridge.get("date_limite_dossier") == "Aucune" else bridge.get("date_limite_dossier", ""),
-            key="manual_date_limite_dossier",
-        )
-        overrides["montant_dossier"] = st.text_input(
-            "Montant dossier",
-            value="" if bridge.get("montant_dossier") == "Aucun" else bridge.get("montant_dossier", ""),
-            key="manual_montant_dossier",
-        )
-        overrides["conditions_dossier"] = st.text_area(
-            "Conditions dossier",
-            value="" if bridge.get("conditions_dossier") == "Aucune" else bridge.get("conditions_dossier", ""),
-            key="manual_conditions_dossier",
-            height=120,
-        )
+    displayed_fields = 0
 
-    with col2:
-        overrides["type_structure_client"] = st.text_input(
-            "Type de structure client",
-            value="" if bridge.get("type_structure_client") == "Non detectee" else bridge.get("type_structure_client", ""),
-            key="manual_type_structure_client",
-        )
-        overrides["identite_client"] = st.text_input(
-            "Identite / activite client",
-            value="" if bridge.get("identite_client") == "Aucune" else bridge.get("identite_client", ""),
-            key="manual_identite_client",
-        )
-        overrides["montant_projet"] = st.text_input(
-            "Montant projet",
-            value="" if bridge.get("montant_projet") == "Non detecte" else bridge.get("montant_projet", ""),
-            key="manual_montant_projet",
-        )
-        overrides["dates_projet"] = st.text_input(
-            "Dates projet",
-            value="" if bridge.get("dates_projet") == "Aucune" else bridge.get("dates_projet", ""),
-            key="manual_dates_projet",
-        )
-        overrides["elements_projet"] = st.text_area(
-            "Elements projet",
-            value="" if bridge.get("elements_projet") == "Aucun" else bridge.get("elements_projet", ""),
-            key="manual_elements_projet",
-            height=120,
-        )
+    for section_title, section_files, fields in sections:
+        source_label = format_loaded_documents_label(section_files)
+        missing_fields = [
+            field for field in fields
+            if is_missing_bridge_value(field[0], bridge.get(field[0], ""))
+        ]
+
+        if not missing_fields:
+            continue
+
+        displayed_fields += len(missing_fields)
+        with st.expander(f"{section_title} a completer", expanded=True):
+            st.caption(f"Documents charges : {source_label}")
+            for field_key, field_type, base_label, key_suffix in missing_fields:
+                overrides[field_key] = render_dynamic_manual_field(
+                    field_key,
+                    field_type,
+                    base_label,
+                    bridge,
+                    source_label,
+                    key_suffix,
+                )
+
+    if displayed_fields == 0:
+        st.success("Aucune donnee prioritaire ne semble manquer dans le pont actuel.")
 
     return apply_manual_completion(bridge, overrides)
 
 
-def render_bridge_section(bridge: dict[str, str]) -> dict[str, str]:
+def render_bridge_section(bridge: dict[str, str], dossier_files, client_files, project_files) -> dict[str, str]:
     st.subheader("Pont local - Donnees comparables WF2a/WF2b")
     render_metadata(bridge)
     st.divider()
-    completed_bridge = render_manual_completion_widget(bridge)
+    completed_bridge = render_manual_completion_widget(bridge, dossier_files, client_files, project_files)
     st.markdown("### Pont apres completion manuelle")
     render_metadata(completed_bridge)
     return completed_bridge
@@ -1414,7 +1475,12 @@ def render_upload() -> None:
         block_files_map["Documents client"],
         block_files_map["Documents projet"],
     )
-    completed_bridge = render_bridge_section(bridge)
+    completed_bridge = render_bridge_section(
+        bridge,
+        block_files_map["Documents dossier"],
+        block_files_map["Documents client"],
+        block_files_map["Documents projet"],
+    )
     st.divider()
     render_wf3_section(
         block_files_map["Documents dossier"],
