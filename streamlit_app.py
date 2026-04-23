@@ -1044,6 +1044,18 @@ def render_wf3_section(
 
     if bridge is None:
         bridge = build_comparable_bridge(dossier_files, client_files, project_files)
+    if global_bridge is None:
+        fallback_block_files_map = {
+            "Documents dossier": dossier_files,
+            "Documents client": client_files,
+            "Documents projet": project_files,
+        }
+        fallback_cross_summary = build_global_cross_block_summary(fallback_block_files_map)
+        global_bridge = build_global_context_bridge(
+            fallback_block_files_map,
+            fallback_cross_summary,
+            bridge,
+        )
     wf3 = compute_wf3_local(bridge, global_bridge=global_bridge)
 
     col1, col2 = st.columns(2)
@@ -1862,34 +1874,55 @@ def render_upload() -> None:
     ]
     st.divider()
     render_global_summary(summary_map)
-    st.divider()
-    render_cross_block_summary(build_global_cross_block_summary(block_files_map))
-    st.divider()
-    render_wf2a_dossier_section(block_files_map["Documents dossier"])
-    st.divider()
-    render_wf2b_section(
-        block_files_map["Documents client"],
-        block_files_map["Documents projet"],
-    )
-    st.divider()
+
+    cross_summary = build_global_cross_block_summary(block_files_map)
     bridge = build_comparable_bridge(
         block_files_map["Documents dossier"],
         block_files_map["Documents client"],
         block_files_map["Documents projet"],
     )
-    completed_bridge = render_bridge_section(
+    global_context_bridge = build_global_context_bridge(
+        block_files_map,
+        cross_summary,
         bridge,
-        block_files_map["Documents dossier"],
-        block_files_map["Documents client"],
-        block_files_map["Documents projet"],
     )
+
     st.divider()
-    render_wf3_section(
-        block_files_map["Documents dossier"],
-        block_files_map["Documents client"],
-        block_files_map["Documents projet"],
-        bridge=completed_bridge,
+    diagnostic_tab, extraction_tab, bridge_tab = st.tabs(
+        ["Diagnostic prioritaire", "Extractions detaillees", "Ponts et completions"]
     )
+
+    with bridge_tab:
+        with st.expander("Pont metier WF2a / WF2b", expanded=True):
+            completed_bridge = render_bridge_section(
+                bridge,
+                block_files_map["Documents dossier"],
+                block_files_map["Documents client"],
+                block_files_map["Documents projet"],
+            )
+        with st.expander("Pont global - Contexte documentaire", expanded=False):
+            render_global_context_bridge(global_context_bridge)
+
+    with diagnostic_tab:
+        st.markdown("### Lecture prioritaire")
+        render_cross_block_summary(cross_summary)
+        st.divider()
+        render_wf3_section(
+            block_files_map["Documents dossier"],
+            block_files_map["Documents client"],
+            block_files_map["Documents projet"],
+            bridge=completed_bridge,
+            global_bridge=global_context_bridge,
+        )
+
+    with extraction_tab:
+        with st.expander("WF2a local - Criteres dossier", expanded=True):
+            render_wf2a_dossier_section(block_files_map["Documents dossier"])
+        with st.expander("WF2b local - Profil client et donnees projet", expanded=True):
+            render_wf2b_section(
+                block_files_map["Documents client"],
+                block_files_map["Documents projet"],
+            )
 
 
 def main() -> None:
