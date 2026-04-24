@@ -946,7 +946,7 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
 
     with liv_tab_1:
         if sections:
-            for section in sections[:4]:
+            for section in sections:
                 with st.expander(f"{section.get('section', 'Section')} · {section.get('statut', 'a_completer')}", expanded=False):
                     st.write(section.get("contenu", ""))
         else:

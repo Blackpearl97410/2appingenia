@@ -2,6 +2,47 @@ from __future__ import annotations
 
 import json
 
+
+def _dedup_strings(items: list[str]) -> list[str]:
+    return list(dict.fromkeys(item.strip() for item in items if str(item).strip()))
+
+
+def _collect_field_sources(block: dict[str, object]) -> list[dict[str, str]]:
+    collected: list[dict[str, str]] = []
+    if not isinstance(block, dict):
+        return collected
+    for field_name, raw_value in block.items():
+        if isinstance(raw_value, dict):
+            value = str(raw_value.get("value", "")).strip()
+            source_document = str(raw_value.get("source_document", "")).strip()
+            source_texte = str(raw_value.get("source_texte", "")).strip()
+            if value or source_document or source_texte:
+                collected.append(
+                    {
+                        "field": field_name,
+                        "value": value,
+                        "source_document": source_document,
+                        "source_texte": source_texte,
+                    }
+                )
+        elif isinstance(raw_value, list):
+            for item in raw_value:
+                if not isinstance(item, dict):
+                    continue
+                value = str(item.get("value", "")).strip()
+                source_document = str(item.get("source_document", "")).strip()
+                source_texte = str(item.get("source_texte", "")).strip()
+                if value or source_document or source_texte:
+                    collected.append(
+                        {
+                            "field": field_name,
+                            "value": value,
+                            "source_document": source_document,
+                            "source_texte": source_texte,
+                        }
+                    )
+    return collected
+
 from app.services.llm_client import call_llm_message, parse_json_response
 
 
@@ -80,6 +121,11 @@ Contraintes / garde-fous
 - Adopte un style professionnel, fluide, clair, crédible et exploitable.
 - Raisonne en interne mais n’expose pas ton raisonnement détaillé.
 - Respecte strictement les attendus identifiés dans `wf2a`.
+- Ne te contente jamais de reformuler `wf3.resume_executif`.
+- Quand la matière source est suffisante, chaque grande section doit contenir un vrai brouillon rédigé, pas une simple note.
+- Vise en priorité 6 à 10 sections utiles et substantielles.
+- Pour les sections majeures (`resume du projet`, `description du projet`, `mise en oeuvre`, `publics`, `budget`, `structure porteuse`), rédige au moins 5 à 8 phrases si les sources le permettent.
+- N'utilise pas des formulations de type `Resume initial`, `A transformer`, `A retravailler` comme contenu principal.
 - Réponds uniquement avec du JSON brut, sans markdown autour.
 
 Format de sortie attendu
@@ -176,6 +222,8 @@ Contraintes / garde-fous
 - Si l’appel impose un cofinancement ou un plafond, le signaler.
 - Si le budget semble incomplet, le dire explicitement.
 - Raisonne en interne, mais ne montre pas le raisonnement.
+- Produis une vraie trame exploitable, pas seulement 2 ou 3 lignes symboliques.
+- Si l'appel ou les sources laissent entendre un fonctionnement classique, propose au minimum 6 lignes de charges et 4 lignes de produits.
 - Réponds uniquement avec du JSON brut.
 
 Format de sortie attendu
@@ -306,11 +354,43 @@ def _build_wf4_payload(
     wf2b_structured: dict[str, object],
     wf3_analysis: dict[str, object],
 ) -> str:
+    criteres = [
+        {
+            "libelle": str(item.get("libelle", "")).strip(),
+            "detail": str(item.get("detail", "")).strip(),
+            "source_document": str(item.get("source_document", "")).strip(),
+            "source_texte": str(item.get("source_texte", "")).strip(),
+            "categorie": str(item.get("categorie", "")).strip(),
+            "domaine": str(item.get("domaine", "")).strip(),
+        }
+        for item in wf2a_structured.get("criteres", [])
+        if isinstance(item, dict)
+    ]
+    structure_sources = _collect_field_sources(wf2b_structured.get("profil_client", {}))
+    projet_sources = _collect_field_sources(wf2b_structured.get("donnees_projet", {}))
+    critical_actions = _dedup_strings(
+        [
+            str(item.get("action_requise", "")).strip()
+            for item in wf3_analysis.get("resultats_criteres", [])
+            if isinstance(item, dict)
+        ]
+    )
+    source_documents = _dedup_strings(
+        [entry["source_document"] for entry in criteres + structure_sources + projet_sources if entry.get("source_document")]
+    )
+
     return json.dumps(
         {
             "wf2a": wf2a_structured,
             "wf2b": wf2b_structured,
             "wf3": wf3_analysis,
+            "matiere_source": {
+                "documents_sources": source_documents,
+                "criteres_explicites": criteres,
+                "structure_porteuse": structure_sources,
+                "projet": projet_sources,
+                "actions_critiques": critical_actions,
+            },
         },
         ensure_ascii=False,
         indent=2,
