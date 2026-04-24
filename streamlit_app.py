@@ -48,6 +48,7 @@ from app.services.llm_client import describe_llm_readiness
 from app.services.persistence import persist_pipeline_outputs
 from app.services.pipeline_runtime import resolve_pipeline_outputs
 from app.services.wf2_llm import request_wf2a_llm_payload
+from app.services.client_manager import list_clients, create_client
 
 
 def render_metadata(metadata: dict[str, str]) -> None:
@@ -2279,6 +2280,65 @@ def render_upload() -> None:
         value=persist_default,
         help="Enregistre client, dossier, documents, criteres, analyse, resultats et rapport dans Supabase.",
     )
+
+    # ── Sélecteur de client ────────────────────────────────────────────────
+    selected_client_id: str | None = None
+    if persist_supabase:
+        st.markdown("#### Client a associer a ce dossier")
+        existing_clients = list_clients()
+        client_options = {c.label(): c.id for c in existing_clients}
+
+        col_c1, col_c2 = st.columns([2, 1])
+        with col_c1:
+            mode = st.radio(
+                "Mode",
+                ["Selectionner un client existant", "Creer un nouveau client"],
+                horizontal=True,
+                key="client_select_mode",
+                label_visibility="collapsed",
+            )
+
+        if mode == "Selectionner un client existant":
+            if client_options:
+                chosen_label = st.selectbox(
+                    "Client",
+                    options=list(client_options.keys()),
+                    key="client_selector",
+                )
+                selected_client_id = client_options[chosen_label]
+                st.caption(f"ID : `{selected_client_id}`")
+            else:
+                st.info("Aucun client dans Supabase. Creez-en un ci-dessous.")
+        else:
+            with st.form("form_new_client", border=True):
+                new_nom = st.text_input("Nom de la structure *", key="new_client_nom")
+                col_f1, col_f2 = st.columns(2)
+                new_forme = col_f1.text_input("Forme juridique", key="new_client_forme")
+                new_secteur = col_f2.text_input("Secteur d'activite", key="new_client_secteur")
+                col_f3, col_f4 = st.columns(2)
+                new_email = col_f3.text_input("Email de contact", key="new_client_email")
+                new_tel = col_f4.text_input("Telephone", key="new_client_tel")
+                new_siret = st.text_input("SIRET (optionnel)", key="new_client_siret")
+                submitted = st.form_submit_button("Creer ce client", type="primary")
+                if submitted:
+                    if not new_nom.strip():
+                        st.error("Le nom de la structure est obligatoire.")
+                    else:
+                        created = create_client(
+                            nom=new_nom,
+                            forme_juridique=new_forme or None,
+                            secteur_activite=new_secteur or None,
+                            contact_email=new_email or None,
+                            contact_telephone=new_tel or None,
+                            siret=new_siret or None,
+                        )
+                        if created:
+                            st.success(f"Client cree : **{created.nom}** (`{created.id}`).")
+                            selected_client_id = created.id
+                            st.rerun()
+                        else:
+                            st.error("Erreur lors de la creation du client dans Supabase.")
+
     if st.button("Executer le pipeline", key="execute_pipeline_button", type="primary"):
         pipeline_outputs = resolve_pipeline_outputs(
             block_files_map["Documents dossier"],
@@ -2295,6 +2355,7 @@ def render_upload() -> None:
                 block_files_map["Documents client"],
                 block_files_map["Documents projet"],
                 pipeline_outputs,
+                selected_client_id=selected_client_id,
             )
         store_pipeline_outputs(files_signature, pipeline_outputs, persistence_result)
         active_pipeline_outputs = pipeline_outputs
