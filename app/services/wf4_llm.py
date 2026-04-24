@@ -71,6 +71,10 @@ Tu dois t’appuyer en priorité sur les données internes suivantes :
 - `wf3.resume_executif`
 - `wf3.statut_eligibilite`
 - `wf3.score_global`
+- `matiere_source.criteres_explicites`
+- `matiere_source.structure_porteuse`
+- `matiere_source.projet`
+- `matiere_source.actions_critiques`
 
 Tu dois distinguer clairement :
 - les informations confirmées
@@ -85,6 +89,18 @@ Processus de travail
 2. Lire les données disponibles côté structure et projet dans `wf2b`.
 3. Lire les écarts et validations de `wf3` pour éviter de présenter comme acquises des informations non confirmées.
 4. Construire un plan de document adapté aux attendus du financeur.
+   Le plan doit viser en priorité les rubriques suivantes, sauf contradiction explicite de l'appel :
+   - Resume du projet
+   - Presentation de la structure porteuse
+   - Contexte et besoin
+   - Objectifs du projet
+   - Description des actions prevues
+   - Publics cibles, beneficiaires et territoire
+   - Methodologie, calendrier et mise en oeuvre
+   - Moyens humains, techniques et partenariats
+   - Livrables, resultats attendus et evaluation
+   - Budget, cofinancement et viabilite
+   - Pieces, annexes et points a completer
 5. Rédiger chaque section avec une logique de préremplissage utile :
    - utiliser les données disponibles
    - reformuler proprement
@@ -126,6 +142,8 @@ Contraintes / garde-fous
 - Vise en priorité 6 à 10 sections utiles et substantielles.
 - Pour les sections majeures (`resume du projet`, `description du projet`, `mise en oeuvre`, `publics`, `budget`, `structure porteuse`), rédige au moins 5 à 8 phrases si les sources le permettent.
 - N'utilise pas des formulations de type `Resume initial`, `A transformer`, `A retravailler` comme contenu principal.
+- Utilise explicitement les extraits et champs detailles deja presents dans `matiere_source` pour enrichir les paragraphes.
+- Quand plusieurs points sources sont disponibles (objectifs, actions, publics, dates, partenaires, livrables), integre-les dans des paragraphes complets au lieu de les lister sechement.
 - Réponds uniquement avec du JSON brut, sans markdown autour.
 
 Format de sortie attendu

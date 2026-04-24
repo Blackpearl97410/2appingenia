@@ -6,12 +6,13 @@ from app.services.wf2 import VALID_CONFIDENCE, extract_document_payloads
 
 WF2B_SYSTEM_PROMPT = f"""
 Tu es un analyste expert en financement public.
-Ta mission est d'extraire un profil client et des donnees projet a partir de documents heterogenes.
+Ta mission est d'extraire un profil client et des donnees projet a partir de documents heterogenes, avec un niveau de detail suffisant pour produire ensuite un document de candidature pre-rempli.
 
 Regles :
 - ne deduis pas ce qui n'est pas explicite
 - cite toujours un document source et un extrait de texte
 - utilise uniquement ces niveaux de confiance : {", ".join(sorted(VALID_CONFIDENCE))}
+- privilegie l'extraction de matiere exploitable pour rediger un dossier : contexte, besoin, objectifs, actions, publics, territoire, calendrier, moyens, livrables, budget, partenariats
 - reponds uniquement avec du JSON brut, sans markdown
 
 Format attendu :
@@ -28,6 +29,25 @@ Format attendu :
     "siret": {{ "...": "..." }},
     "email": {{ "...": "..." }},
     "telephone": {{ "...": "..." }},
+    "territoire_implantation": {{ "...": "..." }},
+    "historique_references": [
+      {{
+        "value": "reference, experience, projet passe ou capacite utile",
+        "source_document": "nom_fichier.ext",
+        "source_texte": "extrait exact",
+        "niveau_confiance": "moyen",
+        "necessite_validation": true
+      }}
+    ],
+    "capacites_porteuses": [
+      {{
+        "value": "competence, equipe, materiel, experience ou capacite de portage",
+        "source_document": "nom_fichier.ext",
+        "source_texte": "extrait exact",
+        "niveau_confiance": "moyen",
+        "necessite_validation": true
+      }}
+    ],
     "activites": [
       {{
         "value": "activite detectee",
@@ -41,6 +61,51 @@ Format attendu :
   "donnees_projet": {{
     "titre_projet": {{ "...": "..." }},
     "montant_detecte": {{ "...": "..." }},
+    "contexte_besoin": [
+      {{
+        "value": "contexte, constat ou besoin",
+        "source_document": "nom_fichier.ext",
+        "source_texte": "extrait exact",
+        "niveau_confiance": "moyen",
+        "necessite_validation": true
+      }}
+    ],
+    "objectifs": [
+      {{
+        "value": "objectif du projet",
+        "source_document": "nom_fichier.ext",
+        "source_texte": "extrait exact",
+        "niveau_confiance": "moyen",
+        "necessite_validation": true
+      }}
+    ],
+    "actions_prevues": [
+      {{
+        "value": "action, atelier, intervention ou etape prevue",
+        "source_document": "nom_fichier.ext",
+        "source_texte": "extrait exact",
+        "niveau_confiance": "moyen",
+        "necessite_validation": true
+      }}
+    ],
+    "publics_cibles": [
+      {{
+        "value": "public cible ou beneficiaires",
+        "source_document": "nom_fichier.ext",
+        "source_texte": "extrait exact",
+        "niveau_confiance": "moyen",
+        "necessite_validation": true
+      }}
+    ],
+    "territoire_concerne": [
+      {{
+        "value": "territoire, commune, quartier ou zone d intervention",
+        "source_document": "nom_fichier.ext",
+        "source_texte": "extrait exact",
+        "niveau_confiance": "moyen",
+        "necessite_validation": true
+      }}
+    ],
     "dates_detectees": [
       {{
         "value": "date ou periode",
@@ -53,6 +118,42 @@ Format attendu :
     "elements_detectes": [
       {{
         "value": "objectif, action, public, livrable ou budget",
+        "source_document": "nom_fichier.ext",
+        "source_texte": "extrait exact",
+        "niveau_confiance": "moyen",
+        "necessite_validation": true
+      }}
+    ],
+    "partenariats": [
+      {{
+        "value": "partenaire, commune, institution ou acteur associe",
+        "source_document": "nom_fichier.ext",
+        "source_texte": "extrait exact",
+        "niveau_confiance": "moyen",
+        "necessite_validation": true
+      }}
+    ],
+    "moyens_humains_techniques": [
+      {{
+        "value": "equipe, competences, equipements, moyens techniques ou logistiques",
+        "source_document": "nom_fichier.ext",
+        "source_texte": "extrait exact",
+        "niveau_confiance": "moyen",
+        "necessite_validation": true
+      }}
+    ],
+    "livrables_prevus": [
+      {{
+        "value": "livrable, resultat, production attendue ou indicateur de sortie",
+        "source_document": "nom_fichier.ext",
+        "source_texte": "extrait exact",
+        "niveau_confiance": "moyen",
+        "necessite_validation": true
+      }}
+    ],
+    "cofinancements": [
+      {{
+        "value": "autofinancement, cofinancement, autre financeur ou recette",
         "source_document": "nom_fichier.ext",
         "source_texte": "extrait exact",
         "niveau_confiance": "moyen",
@@ -99,7 +200,7 @@ def request_wf2b_llm_payload(
     llm_result = call_llm_message(
         WF2B_SYSTEM_PROMPT,
         user_prompt,
-        max_tokens=4000,
+        max_tokens=7000,
         provider_override=provider_override,
         model_override=model_override,
     )

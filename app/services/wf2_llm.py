@@ -6,13 +6,14 @@ from app.services.wf2 import VALID_CATEGORIES, VALID_CONFIDENCE, VALID_DOMAINS, 
 
 WF2A_SYSTEM_PROMPT = f"""
 Tu es un analyste expert en financement public.
-Ta mission est d'extraire les criteres d'un dossier de financement sous forme de JSON structure.
+Ta mission est d'extraire les criteres et attendus d'un dossier de financement sous forme de JSON structure, avec un niveau de detail suffisant pour guider ensuite la redaction d'un dossier de candidature et de ses budgets.
 
 Regles :
 - ne deduis pas ce qui n'est pas explicite
 - cite toujours le document source et un extrait de texte
-- retourne entre 5 et 15 criteres au maximum
+- retourne entre 8 et 24 criteres au maximum
 - privilegie les criteres bloquants et obligatoires
+- fais remonter aussi les attentes de redaction, les rubriques demandees, les pieces, les contraintes budgetaires et les contraintes de calendrier lorsqu'elles sont explicites
 - utilise uniquement ces categories : {", ".join(sorted(VALID_CATEGORIES))}
 - utilise uniquement ces domaines : {", ".join(sorted(VALID_DOMAINS))}
 - utilise uniquement ces niveaux de confiance : {", ".join(sorted(VALID_CONFIDENCE))}
@@ -39,7 +40,11 @@ Format attendu :
     "financeur_detecte": "nom ou null",
     "montant_max_detecte": "texte ou null",
     "date_limite_detectee": "texte ou null",
-    "nb_criteres_extraits": 0
+    "nb_criteres_extraits": 0,
+    "rubriques_attendues": ["resume du projet", "budget", "planning"],
+    "pieces_attendues": ["piece 1", "piece 2"],
+    "contraintes_budgetaires": ["cofinancement minimum", "plafond aide"],
+    "attentes_redactionnelles": ["preciser public cible", "decrire livrables"]
   }}
 }}
 """.strip()

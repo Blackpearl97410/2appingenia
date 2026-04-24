@@ -358,6 +358,14 @@ def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
             confidence="moyen" if phone_match else "bas",
             validation_required=phone_match is None,
         ),
+        "territoire_implantation": build_field_value(
+            "territoire_implantation",
+            "La Reunion" if "reunion" in client_text or "réunion" in client_text else "Non detecte",
+            client_source,
+            find_source_excerpt(client_source_text, "reunion") if ("reunion" in client_text or "réunion" in client_text) else "",
+            confidence="moyen" if ("reunion" in client_text or "réunion" in client_text) else "bas",
+            validation_required=not ("reunion" in client_text or "réunion" in client_text),
+        ),
         "activites": [
             build_field_value(
                 "activite",
@@ -367,6 +375,26 @@ def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
                 confidence="moyen",
             )
             for keyword in detected_activities[:8]
+        ],
+        "historique_references": [
+            build_field_value(
+                "historique_reference",
+                keyword,
+                client_source,
+                find_source_excerpt(client_source_text, keyword),
+                confidence="moyen",
+            )
+            for keyword in [item for item in ["experience", "reference", "production", "studio", "association"] if item in client_text][:6]
+        ],
+        "capacites_porteuses": [
+            build_field_value(
+                "capacite_porteuse",
+                keyword,
+                client_source,
+                find_source_excerpt(client_source_text, keyword),
+                confidence="moyen",
+            )
+            for keyword in [item for item in ["equipe", "materiel", "accompagnement", "production", "competence"] if item in client_text][:6]
         ],
         "nom_structure": build_field_value(
             "nom_structure",
@@ -395,6 +423,56 @@ def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
             confidence="haut" if amount_match else "bas",
             validation_required=amount_match is None,
         ),
+        "contexte_besoin": [
+            build_field_value(
+                "contexte_besoin",
+                keyword,
+                project_source,
+                find_source_excerpt(project_source_text, keyword),
+                confidence="moyen",
+            )
+            for keyword in [item for item in ["contexte", "besoin", "enjeu", "constat", "diagnostic"] if item in project_text][:6]
+        ],
+        "objectifs": [
+            build_field_value(
+                "objectif",
+                keyword,
+                project_source,
+                find_source_excerpt(project_source_text, keyword),
+                confidence="moyen",
+            )
+            for keyword in [item for item in ["objectif", "ambition", "finalite"] if item in project_text][:6]
+        ],
+        "actions_prevues": [
+            build_field_value(
+                "action_prevue",
+                keyword,
+                project_source,
+                find_source_excerpt(project_source_text, keyword),
+                confidence="moyen",
+            )
+            for keyword in [item for item in ["action", "atelier", "accompagnement", "production", "diffusion", "formation"] if item in project_text][:8]
+        ],
+        "publics_cibles": [
+            build_field_value(
+                "public_cible",
+                keyword,
+                project_source,
+                find_source_excerpt(project_source_text, keyword),
+                confidence="moyen",
+            )
+            for keyword in [item for item in ["public", "beneficiaire", "jeune", "artiste", "association", "habitant"] if item in project_text][:8]
+        ],
+        "territoire_concerne": [
+            build_field_value(
+                "territoire_concerne",
+                keyword,
+                project_source,
+                find_source_excerpt(project_source_text, keyword),
+                confidence="moyen",
+            )
+            for keyword in [item for item in ["reunion", "réunion", "quartier", "commune", "territoire", "port", "saint"] if item in project_text][:8]
+        ],
         "dates_detectees": [
             build_field_value(
                 "date_projet",
@@ -414,6 +492,46 @@ def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
                 confidence="moyen",
             )
             for keyword in detected_project_elements[:8]
+        ],
+        "partenariats": [
+            build_field_value(
+                "partenariat",
+                keyword,
+                project_source,
+                find_source_excerpt(project_source_text, keyword),
+                confidence="moyen",
+            )
+            for keyword in [item for item in ["partenaire", "commune", "ville", "institution", "association"] if item in project_text][:8]
+        ],
+        "moyens_humains_techniques": [
+            build_field_value(
+                "moyens_humains_techniques",
+                keyword,
+                project_source,
+                find_source_excerpt(project_source_text, keyword),
+                confidence="moyen",
+            )
+            for keyword in [item for item in ["equipe", "materiel", "studio", "technique", "encadrement", "ressource"] if item in project_text][:8]
+        ],
+        "livrables_prevus": [
+            build_field_value(
+                "livrable_prevu",
+                keyword,
+                project_source,
+                find_source_excerpt(project_source_text, keyword),
+                confidence="moyen",
+            )
+            for keyword in [item for item in ["livrable", "video", "contenu", "diffusion", "evaluation", "resultat"] if item in project_text][:8]
+        ],
+        "cofinancements": [
+            build_field_value(
+                "cofinancement",
+                keyword,
+                project_source,
+                find_source_excerpt(project_source_text, keyword),
+                confidence="moyen",
+            )
+            for keyword in [item for item in ["cofinancement", "autofinancement", "subvention", "recette", "financeur"] if item in project_text][:8]
         ],
     }
 
