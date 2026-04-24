@@ -86,6 +86,7 @@ def store_pipeline_outputs(
     st.session_state["pipeline_signature"] = signature
     st.session_state["pipeline_outputs"] = outputs
     st.session_state["pipeline_persistence"] = persistence or {}
+    st.session_state["pipeline_last_error"] = ""
 
 
 # ── Shared display helpers ────────────────────────────────────────────────────
@@ -1293,27 +1294,40 @@ def render_upload() -> None:
                             st.error("Erreur lors de la creation du client dans Supabase.")
 
     if st.button("Executer le pipeline", key="execute_pipeline_button", type="primary"):
-        pipeline_outputs = resolve_pipeline_outputs(
-            block_files_map["Documents dossier"],
-            block_files_map["Documents client"],
-            block_files_map["Documents projet"],
-            completed_bridge=completed_bridge,
-            global_context_bridge=global_context_bridge,
-            prefer_llm=prefer_llm,
-            llm_provider=selected_provider,
-            llm_model=selected_model,
-        )
-        persistence_result = None
-        if persist_supabase:
-            persistence_result = persist_pipeline_outputs(
-                block_files_map["Documents dossier"],
-                block_files_map["Documents client"],
-                block_files_map["Documents projet"],
-                pipeline_outputs,
-                selected_client_id=selected_client_id,
+        st.session_state["pipeline_last_error"] = ""
+        try:
+            with st.spinner("Execution du pipeline en cours..."):
+                pipeline_outputs = resolve_pipeline_outputs(
+                    block_files_map["Documents dossier"],
+                    block_files_map["Documents client"],
+                    block_files_map["Documents projet"],
+                    completed_bridge=completed_bridge,
+                    global_context_bridge=global_context_bridge,
+                    prefer_llm=prefer_llm,
+                    llm_provider=selected_provider,
+                    llm_model=selected_model,
+                )
+                persistence_result = None
+                if persist_supabase:
+                    persistence_result = persist_pipeline_outputs(
+                        block_files_map["Documents dossier"],
+                        block_files_map["Documents client"],
+                        block_files_map["Documents projet"],
+                        pipeline_outputs,
+                        selected_client_id=selected_client_id,
+                    )
+            store_pipeline_outputs(files_signature, pipeline_outputs, persistence_result)
+            active_pipeline_outputs = pipeline_outputs
+        except Exception as exc:
+            st.session_state["pipeline_last_error"] = f"{exc.__class__.__name__}: {exc}"
+            st.error(
+                "Le pipeline a rencontre une erreur avant de produire un resultat. "
+                "Verifie le provider/modele choisi ou repasse temporairement en heuristique locale."
             )
-        store_pipeline_outputs(files_signature, pipeline_outputs, persistence_result)
-        active_pipeline_outputs = pipeline_outputs
+
+    pipeline_last_error = st.session_state.get("pipeline_last_error", "")
+    if pipeline_last_error:
+        st.warning(f"Derniere erreur pipeline : {pipeline_last_error}")
 
     if active_pipeline_outputs:
         execution_meta = active_pipeline_outputs.get("execution", {})
