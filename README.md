@@ -1,3 +1,4 @@
+[README.md](https://github.com/user-attachments/files/27038795/README.md)
 # AAP Ingenia
 
 AAP Ingenia est un prototype de back-office pour analyser des appels a projets et appels d'offres, a partir d'une base documentaire et d'un futur pipeline d'IA documentaire.
@@ -9,9 +10,9 @@ Le projet est en phase de structuration. Le dossier `contexte/` contient les not
 Le prototype actuel sert a :
 
 - centraliser la vision du projet ;
-- afficher les briques du MVP ;
-- preparer une premiere interface Streamlit simple ;
-- poser une base propre avant l'integration de `Supabase`, `n8n` et des workflows IA.
+- tester localement les workflows `WF1` a `WF4` ;
+- integrer une base documentaire locale exploitable ;
+- preparer `Supabase`, `n8n` et les futurs workflows IA.
 
 ## Structure du projet
 
@@ -27,8 +28,10 @@ Le prototype actuel sert a :
 │   ├── models/
 │   └── utils/
 ├── data/
+│   ├── reference/
 │   └── samples/
 ├── docs/
+├── supabase/
 ├── contexte/
 │   ├── # CLAUDE.md
 │   ├── subly_schema_v3.sql.md
@@ -63,13 +66,15 @@ streamlit run streamlit_app.py
 - vision produit : definie ;
 - architecture cible : definie ;
 - schema de donnees : avance ;
-- application web : prototype de depart ;
-- structure Python modulaire : en place ;
-- automatisations et base de donnees reelles : non connectees pour l'instant.
+- application web : prototype metier local ;
+- workflows `WF1` a `WF4` : disponibles localement ;
+- structure Python modulaire : amorcee ;
+- base documentaire : cataloguée localement ;
+- Supabase : prepare mais pas encore lance localement.
 
 ## Prochaines etapes conseillees
 
-1. Ajouter une page d'upload dans `app/ui/`.
-2. Creer un service de lecture de documents dans `app/services/`.
-3. Introduire une configuration simple pour les chemins et futures cles API.
-4. Brancher ensuite `Supabase` et les workflows de traitement.
+1. Stabiliser les cas reels et les comparaisons critere par critere.
+2. Brancher la stack locale `Supabase` quand le CLI et Docker seront disponibles.
+3. Connecter ensuite `n8n` et les appels LLM.
+4. Continuer a sortir la logique metier hors de `streamlit_app.py`.
