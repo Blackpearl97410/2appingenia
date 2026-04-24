@@ -907,75 +907,122 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
     budget_projet = livrables.get("budget_projet", {})
     budget_structure = livrables.get("budget_structure", {})
     checklist = list(livrables.get("points_a_completer", []))
-    report_markdown = str(presentation.get("markdown", "") or wf4.get("rapport_markdown", ""))
+    presentation_markdown = str(presentation.get("markdown", "") or wf4.get("rapport_markdown", ""))
+    budget_projet_markdown = str(budget_projet.get("markdown", ""))
+    budget_structure_markdown = str(budget_structure.get("markdown", ""))
+    sections = list(presentation.get("sections", []))
+    budget_projet_structured = budget_projet.get("structured", {})
 
     st.markdown("## Resultat final")
 
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Statut", str(wf3.get("statut_eligibilite", "a confirmer")))
-    col2.metric("Score", f"{wf3.get('score_global', 0)}/100")
-    col3.metric("Provider", str(execution.get("llm_selection", {}).get("provider", "local") or "local"))
-    col4.metric("Modele", str(execution.get("llm_selection", {}).get("model", "heuristique") or "heuristique"))
+    col1.metric("Sections presentation", str(len(sections)))
+    col2.metric("Budget projet", "pret" if budget_projet_structured else "absent")
+    col3.metric("Budget structure", "oui" if budget_structure.get("required") else "non")
+    col4.metric("Points a completer", str(len(checklist)))
 
-    st.markdown("### Resume executif")
+    st.markdown("### Sortie principale attendue")
     st.write(str(rapport.get("resume_executif", wf3.get("resume_executif", "Aucun resume disponible."))))
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.markdown("### Points forts")
-        points_valides = rapport.get("points_valides", [])
-        if points_valides:
-            for item in points_valides[:5]:
-                st.write(f"- {item}")
+    st.markdown("### Livrables de candidature")
+    liv_tab_1, liv_tab_2, liv_tab_3, liv_tab_4 = st.tabs([
+        "Presentation projet",
+        "Budget projet",
+        "Budget structure",
+        "Points a completer",
+    ])
+
+    with liv_tab_1:
+        if sections:
+            for section in sections[:4]:
+                with st.expander(f"{section.get('section', 'Section')} · {section.get('statut', 'a_completer')}", expanded=False):
+                    st.write(section.get("contenu", ""))
         else:
-            st.write("- Aucun point fort clairement valide")
+            st.info("Aucune section de presentation n'a ete produite.")
+        st.download_button(
+            "Telecharger la presentation projet",
+            data=presentation_markdown,
+            file_name="presentation_projet.md",
+            mime="text/markdown",
+            key="download_final_presentation",
+        )
 
-        st.markdown("### Points a confirmer")
-        points_confirm = rapport.get("points_a_confirmer", [])
-        if points_confirm:
-            for item in points_confirm[:5]:
-                st.write(f"- {item}")
+    with liv_tab_2:
+        charges = list(budget_projet_structured.get("charges", []))
+        produits = list(budget_projet_structured.get("produits", []))
+        if budget_projet_structured:
+            budget_rows = []
+            max_len = max(len(charges), len(produits))
+            for index in range(max_len):
+                charge = charges[index] if index < len(charges) else {"poste": "", "montant_previsionnel": ""}
+                produit = produits[index] if index < len(produits) else {"poste": "", "montant_previsionnel": ""}
+                budget_rows.append({
+                    "Charges": charge.get("poste", ""),
+                    "Montant charges": charge.get("montant_previsionnel", ""),
+                    "Produits": produit.get("poste", ""),
+                    "Montant produits": produit.get("montant_previsionnel", ""),
+                })
+            st.dataframe(budget_rows, use_container_width=True)
         else:
-            st.write("- Aucun point intermediaire majeur")
+            st.info("Aucune trame budget projet n'a ete produite.")
+        st.download_button(
+            "Telecharger la trame budget projet",
+            data=budget_projet_markdown,
+            file_name="budget_projet.md",
+            mime="text/markdown",
+            key="download_final_budget_projet",
+        )
 
-    with col_b:
-        st.markdown("### Points bloquants")
-        points_bloquants = rapport.get("points_bloquants", [])
-        if points_bloquants:
-            for item in points_bloquants[:5]:
-                st.write(f"- {item}")
+    with liv_tab_3:
+        if budget_structure.get("required"):
+            st.success("Un budget de structure semble requis par l'appel.")
+            if budget_structure_markdown:
+                st.download_button(
+                    "Telecharger la trame budget structure",
+                    data=budget_structure_markdown,
+                    file_name="budget_structure.md",
+                    mime="text/markdown",
+                    key="download_final_budget_structure",
+                )
         else:
-            st.write("- Aucun blocage majeur detecte")
+            st.info("Aucun budget de structure requis n'a ete detecte.")
 
-        st.markdown("### Actions prioritaires")
-        recommandations = rapport.get("recommandations", [])
-        if recommandations:
-            for item in recommandations[:5]:
-                st.write(f"- {item}")
+    with liv_tab_4:
+        if checklist:
+            st.dataframe(checklist, use_container_width=True)
         else:
-            st.write("- Aucune action urgente")
+            st.info("Aucun point de completion remonte.")
 
-    st.markdown("### Livrables generes")
-    out1, out2, out3 = st.columns(3)
-    out1.metric("Sections presentation", str(len(presentation.get("sections", []))))
-    out2.metric("Budget structure", "oui" if budget_structure.get("required") else "non")
-    out3.metric("Points a completer", str(len(checklist)))
+    with st.expander("Analyse secondaire et traçabilite", expanded=False):
+        meta1, meta2, meta3, meta4 = st.columns(4)
+        meta1.metric("Statut", str(wf3.get("statut_eligibilite", "a confirmer")))
+        meta2.metric("Score", f"{wf3.get('score_global', 0)}/100")
+        meta3.metric("Provider", str(execution.get("llm_selection", {}).get("provider", "local") or "local"))
+        meta4.metric("Modele", str(execution.get("llm_selection", {}).get("model", "heuristique") or "heuristique"))
 
-    dl1, dl2 = st.columns(2)
-    dl1.download_button(
-        "Telecharger la presentation projet",
-        data=report_markdown,
-        file_name="presentation_projet.md",
-        mime="text/markdown",
-        key="download_final_markdown",
-    )
-    dl2.download_button(
-        "Telecharger la sortie JSON",
-        data=json.dumps(pipeline_outputs, ensure_ascii=False, indent=2),
-        file_name="resultat_pipeline.json",
-        mime="application/json",
-        key="download_final_json",
-    )
+        st.markdown("#### Points forts")
+        for item in rapport.get("points_valides", [])[:5] or ["Aucun point fort clairement valide"]:
+            st.write(f"- {item}")
+
+        st.markdown("#### Points a confirmer")
+        for item in rapport.get("points_a_confirmer", [])[:5] or ["Aucun point intermediaire majeur"]:
+            st.write(f"- {item}")
+
+        st.markdown("#### Points bloquants")
+        for item in rapport.get("points_bloquants", [])[:5] or ["Aucun blocage majeur detecte"]:
+            st.write(f"- {item}")
+
+        st.markdown("#### Actions prioritaires")
+        for item in rapport.get("recommandations", [])[:5] or ["Aucune action urgente"]:
+            st.write(f"- {item}")
+
+        st.download_button(
+            "Telecharger la sortie JSON complete",
+            data=json.dumps(pipeline_outputs, ensure_ascii=False, indent=2),
+            file_name="resultat_pipeline.json",
+            mime="application/json",
+            key="download_final_json",
+        )
 
 
 # ── Global summary sections ───────────────────────────────────────────────────
