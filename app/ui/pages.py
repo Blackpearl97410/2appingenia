@@ -72,9 +72,13 @@ from app.services.wf4 import build_wf4_outputs
 
 # ── Session state helpers ─────────────────────────────────────────────────────
 
+PIPELINE_SCHEMA_VERSION = "2026-04-25-wf4-v2"
+
+
 def get_active_pipeline_outputs(signature: str) -> dict[str, object] | None:
     stored_signature = st.session_state.get("pipeline_signature")
-    if stored_signature != signature:
+    stored_version = st.session_state.get("pipeline_schema_version")
+    if stored_signature != signature or stored_version != PIPELINE_SCHEMA_VERSION:
         return None
     return st.session_state.get("pipeline_outputs")
 
@@ -85,6 +89,7 @@ def store_pipeline_outputs(
     persistence: dict[str, object] | None = None,
 ) -> None:
     st.session_state["pipeline_signature"] = signature
+    st.session_state["pipeline_schema_version"] = PIPELINE_SCHEMA_VERSION
     st.session_state["pipeline_outputs"] = outputs
     st.session_state["pipeline_persistence"] = persistence or {}
     st.session_state["pipeline_last_error"] = ""
@@ -1557,6 +1562,7 @@ def render_upload() -> None:
             "WF2a": execution_meta.get("wf2a", {}).get("engine", "heuristique_locale"),
             "WF2b": execution_meta.get("wf2b", {}).get("engine", "heuristique_locale"),
             "WF3": execution_meta.get("wf3", {}).get("engine", "heuristique_locale"),
+            "WF4": execution_meta.get("wf4", {}).get("engine", "heuristique_locale"),
             "Provider LLM": execution_meta.get("llm_selection", {}).get("provider", "defaut"),
             "Modele LLM": execution_meta.get("llm_selection", {}).get("model", "defaut"),
             "Fallback": "oui"
@@ -1567,6 +1573,11 @@ def render_upload() -> None:
             )
             else "non",
         })
+        if execution_meta.get("wf4", {}).get("fallback_used"):
+            st.warning(
+                "WF4 est repasse en fallback heuristique sur cette execution. "
+                "Le livrable affiche peut donc etre plus pauvre que prevu."
+            )
         persistence_result = st.session_state.get("pipeline_persistence", {})
         if persistence_result:
             if persistence_result.get("ok"):
