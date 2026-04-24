@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import unicodedata
 
-from app.services.env_loader import load_project_env
+from app.services.env_loader import get_env_value, load_project_env
 
 
 load_project_env()
@@ -33,11 +33,11 @@ class SupabaseSettings:
 
 def load_supabase_settings() -> SupabaseSettings:
     return SupabaseSettings(
-        url=os.getenv("SUPABASE_URL", ""),
-        anon_key=os.getenv("SUPABASE_ANON_KEY", ""),
-        service_role_key=os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
-        storage_bucket=os.getenv("SUPABASE_STORAGE_BUCKET", "subly-documents"),
-        project_ref=os.getenv("SUPABASE_PROJECT_REF", ""),
+        url=get_env_value("SUPABASE_URL", ""),
+        anon_key=get_env_value("SUPABASE_ANON_KEY", ""),
+        service_role_key=get_env_value("SUPABASE_SERVICE_ROLE_KEY", ""),
+        storage_bucket=get_env_value("SUPABASE_STORAGE_BUCKET", "subly-documents"),
+        project_ref=get_env_value("SUPABASE_PROJECT_REF", ""),
     )
 
 

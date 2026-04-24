@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/27050259/README.md)
 # AAP Ingenia
 
 AAP Ingenia est un prototype de back-office pour analyser des appels a projets et appels d'offres, a partir d'une base documentaire et d'un futur pipeline d'IA documentaire.

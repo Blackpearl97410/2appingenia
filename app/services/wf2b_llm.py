@@ -91,7 +91,7 @@ def build_wf2b_user_prompt(client_files, project_files) -> str:
 
 def request_wf2b_llm_payload(client_files, project_files) -> dict[str, object]:
     user_prompt = build_wf2b_user_prompt(client_files, project_files)
-    llm_result = call_anthropic_message(WF2B_SYSTEM_PROMPT, user_prompt)
+    llm_result = call_anthropic_message(WF2B_SYSTEM_PROMPT, user_prompt, max_tokens=4000)
 
     if not llm_result.get("ok"):
         return {

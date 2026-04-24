@@ -64,7 +64,7 @@ def build_wf2a_user_prompt(dossier_files) -> str:
 
 def request_wf2a_llm_payload(dossier_files) -> dict[str, object]:
     user_prompt = build_wf2a_user_prompt(dossier_files)
-    llm_result = call_anthropic_message(WF2A_SYSTEM_PROMPT, user_prompt)
+    llm_result = call_anthropic_message(WF2A_SYSTEM_PROMPT, user_prompt, max_tokens=6000)
 
     if not llm_result.get("ok"):
         return {

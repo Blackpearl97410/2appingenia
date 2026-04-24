@@ -1,0 +1,29 @@
+# Secrets et environnement
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Streamlit
+.streamlit/
+
+# Supabase — fichiers locaux de liaison (contiennent project-ref et org-id)
+supabase/.temp/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Données locales / documents de test
+base de données appels d'offres et appels à projets vides/
+contexte/

@@ -4,12 +4,12 @@ import json
 import os
 from dataclasses import dataclass
 
-from app.services.env_loader import load_project_env
+from app.services.env_loader import get_env_value, load_project_env
 
 
 load_project_env()
 
-DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
 
 @dataclass
@@ -26,8 +26,8 @@ class LLMSettings:
 
 
 def load_llm_settings() -> LLMSettings:
-    max_tokens_raw = os.getenv("ANTHROPIC_MAX_TOKENS", "1500")
-    temperature_raw = os.getenv("ANTHROPIC_TEMPERATURE", "0.1")
+    max_tokens_raw = get_env_value("ANTHROPIC_MAX_TOKENS", "4000")
+    temperature_raw = get_env_value("ANTHROPIC_TEMPERATURE", "0.1")
 
     try:
         max_tokens = int(max_tokens_raw)
@@ -41,8 +41,8 @@ def load_llm_settings() -> LLMSettings:
 
     return LLMSettings(
         provider="anthropic",
-        api_key=os.getenv("ANTHROPIC_API_KEY", ""),
-        model=os.getenv("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MODEL),
+        api_key=get_env_value("ANTHROPIC_API_KEY", ""),
+        model=get_env_value("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MODEL),
         max_tokens=max_tokens,
         temperature=temperature,
     )
@@ -132,13 +132,22 @@ def call_anthropic_message(system_prompt: str, user_prompt: str, *, max_tokens: 
 
 
 def parse_json_response(text: str) -> tuple[dict[str, object] | None, str | None]:
+    import re
+
     cleaned = text.strip()
     if not cleaned:
         return None, "reponse_vide"
 
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        cleaned = cleaned.replace("json\n", "", 1).strip()
+    # Extract JSON from markdown code fence if present (```json ... ``` or ``` ... ```)
+    fence_match = re.search(r"```(?:json)?\s*\n?([\s\S]+?)\n?```", cleaned)
+    if fence_match:
+        cleaned = fence_match.group(1).strip()
+
+    # Try to extract the first JSON object if there is surrounding text
+    if not cleaned.startswith("{"):
+        obj_match = re.search(r"\{[\s\S]+\}", cleaned)
+        if obj_match:
+            cleaned = obj_match.group(0)
 
     try:
         parsed = json.loads(cleaned)
