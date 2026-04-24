@@ -325,20 +325,45 @@ def _persist_pipeline_outputs_inner(
 
     inserted_prefills = []
     for field in wf4.get("champs_preremplissage", []):
-        row = client.table("champs_preremplissage").insert(
-            {
-                "analyse_id": analysis_row["id"],
-                "client_id": client_row["id"],
-                "dossier_id": dossier_row["id"],
-                "categorie": _sanitize_text(field.get("onglet", "Projet")),
-                "nom_champ": _sanitize_text(field.get("nom_champ", "")),
-                "valeur": _sanitize_text(field.get("valeur", "")),
-                "source": _prefill_source(field),
-                "niveau_confiance": "moyen",
-                "valide_par_humain": False,
-                "est_generique": str(field.get("onglet", "")).lower() in {"structure", "contact"},
-            }
-        ).execute().data[0]
+        is_generic = str(field.get("onglet", "")).lower() in {"structure", "contact"}
+        nom_champ = _sanitize_text(field.get("nom_champ", ""))
+        row_data = {
+            "analyse_id": analysis_row["id"],
+            "client_id": client_row["id"],
+            "dossier_id": dossier_row["id"],
+            "categorie": _sanitize_text(field.get("onglet", "Projet")),
+            "nom_champ": nom_champ,
+            "valeur": _sanitize_text(field.get("valeur", "")),
+            "source": _prefill_source(field),
+            "niveau_confiance": "moyen",
+            "valide_par_humain": False,
+            "est_generique": is_generic,
+        }
+        if is_generic and nom_champ:
+            # Index unique partiel sur (client_id, nom_champ) WHERE est_generique = TRUE.
+            # PostgREST ne résout pas les index partiels via on_conflict → select/update/insert.
+            existing = (
+                client.table("champs_preremplissage")
+                .select("id")
+                .eq("client_id", client_row["id"])
+                .eq("nom_champ", nom_champ)
+                .eq("est_generique", True)
+                .limit(1)
+                .execute()
+                .data
+            )
+            if existing:
+                row = (
+                    client.table("champs_preremplissage")
+                    .update(row_data)
+                    .eq("id", existing[0]["id"])
+                    .execute()
+                    .data[0]
+                )
+            else:
+                row = client.table("champs_preremplissage").insert(row_data).execute().data[0]
+        else:
+            row = client.table("champs_preremplissage").insert(row_data).execute().data[0]
         inserted_prefills.append(row["id"])
 
     financement_rows = client.table("financements").select("id,nom").in_("nom", [s.get("nom") for s in wf4.get("suggestions", []) if s.get("nom")]).execute().data
