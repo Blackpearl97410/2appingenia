@@ -36,7 +36,7 @@ from app.services.data_loader import (
     load_swot_data as load_demo_data,
 )
 from app.services.document_catalog import build_smoke_test_case
-from app.services.llm_client import describe_llm_readiness
+from app.services.llm_client import call_llm_message, describe_llm_readiness
 from app.services.metadata import extract_table_metadata, extract_text_metadata
 from app.services.normalizers import dataframe_to_markdown, filter_business_sheets, workbook_to_markdown
 from app.services.parsers import (
@@ -265,15 +265,20 @@ def render_supabase_page() -> None:
 
 
 def render_llm_page() -> None:
-    st.subheader("Connexion Claude API")
+    st.subheader("Connexion LLM")
 
     llm_info = describe_llm_readiness()
-    is_configured = llm_info.get("ANTHROPIC_API_KEY") == "configuree"
+    anthropic_configured = llm_info.get("ANTHROPIC_API_KEY") == "configuree"
+    google_configured = llm_info.get("GOOGLE_API_KEY") == "configuree"
+    mistral_configured = llm_info.get("MISTRAL_API_KEY") == "configuree"
+    is_configured = anthropic_configured or google_configured or mistral_configured
 
     if is_configured:
-        st.success("Claude API configuree et operationnelle.")
+        st.success("Provider LLM configure et operationnel.")
     else:
-        st.warning("Cle Anthropic non configuree. Ajoutez `ANTHROPIC_API_KEY` dans les secrets Streamlit ou dans le fichier `.env`.")
+        st.warning(
+            "Aucune cle LLM configuree. Ajoutez `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` ou `MISTRAL_API_KEY` dans les secrets Streamlit ou dans le fichier `.env`."
+        )
 
     render_metadata(llm_info)
 
@@ -283,30 +288,54 @@ def render_llm_page() -> None:
         st.write("**Point d'entree**")
         st.write("`app/services/llm_client.py` — appels directs Python")
         st.write("")
-        st.write("**Modele**")
-        st.write(f"`{llm_info.get('Modele', 'claude-sonnet-4-20250514')}`")
+        st.write("**Provider actif**")
+        st.write(f"`{llm_info.get('Provider', 'anthropic')}`")
+        st.write("")
+        st.write("**Modele actif**")
+        st.write(f"`{llm_info.get('Modele', 'gemini-2.5-flash')}`")
     with col2:
         st.write("**Fallback**")
         st.write("Heuristiques locales actives si la cle est absente — l'app ne plante jamais")
         st.write("")
         st.write("**Usage prevu**")
         st.write("WF2a (criteres), WF2b (profil client), WF3 (scoring), WF4 (rapport)")
+        st.write("")
+        st.write("**Providers supportes**")
+        st.write("- Anthropic / Claude")
+        st.write("- Google / Gemini")
+        st.write("- Google / Gemma si le modele est expose par ton compte")
+        st.write("- Mistral / Mistral Small 4")
+        st.write("- Mistral / Ministral 8B si tu forces le nom de modele")
 
     if is_configured:
         st.markdown("### Test de connexion")
-        if st.button("Tester l'appel Claude API", key="btn_test_llm"):
-            from app.services.llm_client import call_anthropic_message
+        if st.button("Tester l'appel LLM", key="btn_test_llm"):
             with st.spinner("Appel en cours..."):
-                result = call_anthropic_message(
+                result = call_llm_message(
                     "Tu es un assistant de test. Reponds en une seule phrase courte.",
                     "Dis juste OK pour confirmer que tu fonctionnes."
                 )
             if result.get("ok"):
                 usage = result.get("usage", {})
-                st.success(f"Claude repond : *{result.get('text', '')}*")
-                st.caption(f"Modele : {result.get('model')} — {usage.get('input_tokens')} tokens entree / {usage.get('output_tokens')} tokens sortie")
+                st.success(f"Le provider repond : *{result.get('text', '')}*")
+                st.caption(
+                    f"Provider : {result.get('provider')} — "
+                    f"Modele : {result.get('model')} — "
+                    f"{usage.get('input_tokens')} tokens entree / {usage.get('output_tokens')} tokens sortie"
+                )
             else:
                 st.error(f"Echec : {result.get('error')}")
+
+    with st.expander("Configuration recommandee", expanded=False):
+        st.write("**Anthropic**")
+        st.code('ANTHROPIC_API_KEY=\"...\"', language="toml")
+        st.write("**Google Gemini**")
+        st.code('LLM_PROVIDER=\"google\"\nGOOGLE_API_KEY=\"...\"\nGOOGLE_MODEL=\"gemini-2.5-flash\"', language="toml")
+        st.write("**Mistral**")
+        st.code('LLM_PROVIDER=\"mistral\"\nMISTRAL_API_KEY=\"...\"\nMISTRAL_MODEL=\"mistral-small-2603\"', language="toml")
+        st.caption(
+            "Pour Gemma, garde la meme integration Google. Si ton compte Google AI Studio ou Vertex expose un modele Gemma compatible API, il suffira de remplacer `GOOGLE_MODEL`. Pour Mistral, `mistral-small-2603` est le choix le plus stable ici ; `ministral-8b-2410` reste possible mais il est documente comme deprecie."
+        )
 
     st.markdown("### Test de preparation WF2a")
     smoke_case = build_smoke_test_case()
@@ -1140,16 +1169,20 @@ def render_upload() -> None:
     st.markdown("### Execution pilotee")
     llm_ready = describe_llm_readiness()
     supabase_ready = describe_supabase_readiness()
-    use_llm_default = llm_ready.get("ANTHROPIC_API_KEY") == "configuree"
+    use_llm_default = (
+        llm_ready.get("ANTHROPIC_API_KEY") == "configuree"
+        or llm_ready.get("GOOGLE_API_KEY") == "configuree"
+        or llm_ready.get("MISTRAL_API_KEY") == "configuree"
+    )
     persist_default = (
         supabase_ready.get("SUPABASE_URL") == "configuree"
         and supabase_ready.get("SUPABASE_SERVICE_ROLE_KEY") == "configuree"
     )
     col_exec_1, col_exec_2 = st.columns(2)
     prefer_llm = col_exec_1.checkbox(
-        "Preferer Claude API pour WF2/WF3",
+        "Preferer un provider LLM pour WF2/WF3",
         value=use_llm_default,
-        help="Utilise Claude si la cle API est configuree, sinon repasse automatiquement sur l'heuristique locale.",
+        help="Utilise le provider LLM configure si une cle est presente, sinon repasse automatiquement sur l'heuristique locale.",
     )
     persist_supabase = col_exec_2.checkbox(
         "Persister les resultats dans Supabase",

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 
 from app.services.env_loader import get_env_value, load_project_env
@@ -10,24 +9,52 @@ from app.services.env_loader import get_env_value, load_project_env
 load_project_env()
 
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
+DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"
+DEFAULT_MISTRAL_MODEL = "mistral-small-2603"
+VALID_LLM_PROVIDERS = {"anthropic", "google", "mistral"}
 
 
 @dataclass
 class LLMSettings:
     provider: str = "anthropic"
-    api_key: str = ""
-    model: str = DEFAULT_ANTHROPIC_MODEL
+    anthropic_api_key: str = ""
+    google_api_key: str = ""
+    mistral_api_key: str = ""
+    anthropic_model: str = DEFAULT_ANTHROPIC_MODEL
+    google_model: str = DEFAULT_GOOGLE_MODEL
+    mistral_model: str = DEFAULT_MISTRAL_MODEL
     max_tokens: int = 1500
     temperature: float = 0.1
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.api_key)
+        if self.provider == "google":
+            return bool(self.google_api_key)
+        if self.provider == "mistral":
+            return bool(self.mistral_api_key)
+        return bool(self.anthropic_api_key)
+
+    @property
+    def active_api_key(self) -> str:
+        if self.provider == "google":
+            return self.google_api_key
+        if self.provider == "mistral":
+            return self.mistral_api_key
+        return self.anthropic_api_key
+
+    @property
+    def active_model(self) -> str:
+        if self.provider == "google":
+            return self.google_model
+        if self.provider == "mistral":
+            return self.mistral_model
+        return self.anthropic_model
 
 
 def load_llm_settings() -> LLMSettings:
     max_tokens_raw = get_env_value("ANTHROPIC_MAX_TOKENS", "4000")
     temperature_raw = get_env_value("ANTHROPIC_TEMPERATURE", "0.1")
+    provider_raw = get_env_value("LLM_PROVIDER", "").strip().lower()
 
     try:
         max_tokens = int(max_tokens_raw)
@@ -39,10 +66,26 @@ def load_llm_settings() -> LLMSettings:
     except ValueError:
         temperature = 0.1
 
+    anthropic_api_key = get_env_value("ANTHROPIC_API_KEY", "")
+    google_api_key = get_env_value("GOOGLE_API_KEY", "")
+    mistral_api_key = get_env_value("MISTRAL_API_KEY", "")
+
+    if provider_raw not in VALID_LLM_PROVIDERS:
+        if google_api_key:
+            provider_raw = "google"
+        elif mistral_api_key:
+            provider_raw = "mistral"
+        else:
+            provider_raw = "anthropic"
+
     return LLMSettings(
-        provider="anthropic",
-        api_key=get_env_value("ANTHROPIC_API_KEY", ""),
-        model=get_env_value("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MODEL),
+        provider=provider_raw,
+        anthropic_api_key=anthropic_api_key,
+        google_api_key=google_api_key,
+        mistral_api_key=mistral_api_key,
+        anthropic_model=get_env_value("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MODEL),
+        google_model=get_env_value("GOOGLE_MODEL", DEFAULT_GOOGLE_MODEL),
+        mistral_model=get_env_value("MISTRAL_MODEL", DEFAULT_MISTRAL_MODEL),
         max_tokens=max_tokens,
         temperature=temperature,
     )
@@ -53,12 +96,26 @@ def create_llm_client():
     if not settings.is_configured:
         return None
 
+    if settings.provider == "google":
+        try:
+            from google import genai
+        except Exception:
+            return None
+        return genai.Client(api_key=settings.google_api_key)
+
+    if settings.provider == "mistral":
+        try:
+            from mistralai import Mistral
+        except Exception:
+            return None
+        return Mistral(api_key=settings.mistral_api_key)
+
     try:
         import anthropic
     except Exception:
         return None
 
-    return anthropic.Anthropic(api_key=settings.api_key)
+    return anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
 
 def describe_llm_readiness() -> dict[str, str]:
@@ -66,8 +123,11 @@ def describe_llm_readiness() -> dict[str, str]:
     return {
         "Provider": settings.provider,
         "Mode integration": "appels directs Python",
-        "Modele": settings.model,
-        "ANTHROPIC_API_KEY": "configuree" if settings.api_key else "non configuree",
+        "Modele": settings.active_model,
+        "LLM_PROVIDER": settings.provider,
+        "ANTHROPIC_API_KEY": "configuree" if settings.anthropic_api_key else "non configuree",
+        "GOOGLE_API_KEY": "configuree" if settings.google_api_key else "non configuree",
+        "MISTRAL_API_KEY": "configuree" if settings.mistral_api_key else "non configuree",
         "Max tokens": str(settings.max_tokens),
         "Temperature": str(settings.temperature),
     }
@@ -86,12 +146,21 @@ def extract_text_from_message(message) -> str:
 
 def call_anthropic_message(system_prompt: str, user_prompt: str, *, max_tokens: int | None = None) -> dict[str, object]:
     settings = load_llm_settings()
+    if settings.provider != "anthropic":
+        return {
+            "ok": False,
+            "provider": settings.provider,
+            "model": settings.active_model,
+            "error": "provider_anthropic_non_actif",
+            "text": "",
+            "usage": {},
+        }
     client = create_llm_client()
     if client is None:
         return {
             "ok": False,
             "provider": settings.provider,
-            "model": settings.model,
+            "model": settings.active_model,
             "error": "client_llm_non_configure",
             "text": "",
             "usage": {},
@@ -101,7 +170,7 @@ def call_anthropic_message(system_prompt: str, user_prompt: str, *, max_tokens: 
 
     try:
         message = client.messages.create(
-            model=settings.model,
+            model=settings.active_model,
             max_tokens=request_max_tokens,
             temperature=settings.temperature,
             system=system_prompt,
@@ -112,7 +181,7 @@ def call_anthropic_message(system_prompt: str, user_prompt: str, *, max_tokens: 
         return {
             "ok": True,
             "provider": settings.provider,
-            "model": settings.model,
+            "model": settings.active_model,
             "text": extract_text_from_message(message),
             "usage": {
                 "input_tokens": getattr(getattr(message, "usage", None), "input_tokens", None),
@@ -124,11 +193,137 @@ def call_anthropic_message(system_prompt: str, user_prompt: str, *, max_tokens: 
         return {
             "ok": False,
             "provider": settings.provider,
-            "model": settings.model,
+            "model": settings.active_model,
             "error": f"{exc.__class__.__name__}: {exc}",
             "text": "",
             "usage": {},
         }
+
+
+def call_google_message(system_prompt: str, user_prompt: str, *, max_tokens: int | None = None) -> dict[str, object]:
+    settings = load_llm_settings()
+    if settings.provider != "google":
+        return {
+            "ok": False,
+            "provider": settings.provider,
+            "model": settings.active_model,
+            "error": "provider_google_non_actif",
+            "text": "",
+            "usage": {},
+        }
+    client = create_llm_client()
+    if client is None:
+        return {
+            "ok": False,
+            "provider": settings.provider,
+            "model": settings.active_model,
+            "error": "client_llm_non_configure",
+            "text": "",
+            "usage": {},
+        }
+
+    request_max_tokens = max_tokens or settings.max_tokens
+
+    try:
+        response = client.models.generate_content(
+            model=settings.active_model,
+            contents=f"{system_prompt}\n\n{user_prompt}",
+            config={
+                "temperature": settings.temperature,
+                "max_output_tokens": request_max_tokens,
+            },
+        )
+        text = getattr(response, "text", "") or ""
+        usage = getattr(response, "usage_metadata", None)
+        return {
+            "ok": True,
+            "provider": settings.provider,
+            "model": settings.active_model,
+            "text": text.strip(),
+            "usage": {
+                "input_tokens": getattr(usage, "prompt_token_count", None),
+                "output_tokens": getattr(usage, "candidates_token_count", None),
+            },
+            "raw": response,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "provider": settings.provider,
+            "model": settings.active_model,
+            "error": f"{exc.__class__.__name__}: {exc}",
+            "text": "",
+            "usage": {},
+        }
+
+
+def call_mistral_message(system_prompt: str, user_prompt: str, *, max_tokens: int | None = None) -> dict[str, object]:
+    settings = load_llm_settings()
+    if settings.provider != "mistral":
+        return {
+            "ok": False,
+            "provider": settings.provider,
+            "model": settings.active_model,
+            "error": "provider_mistral_non_actif",
+            "text": "",
+            "usage": {},
+        }
+    client = create_llm_client()
+    if client is None:
+        return {
+            "ok": False,
+            "provider": settings.provider,
+            "model": settings.active_model,
+            "error": "client_llm_non_configure",
+            "text": "",
+            "usage": {},
+        }
+
+    request_max_tokens = max_tokens or settings.max_tokens
+
+    try:
+        response = client.chat.complete(
+            model=settings.active_model,
+            max_tokens=request_max_tokens,
+            temperature=settings.temperature,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+
+        message = getattr(response, "choices", [None])[0]
+        content = getattr(getattr(message, "message", None), "content", "") if message else ""
+        usage = getattr(response, "usage", None)
+        return {
+            "ok": True,
+            "provider": settings.provider,
+            "model": settings.active_model,
+            "text": (content or "").strip(),
+            "usage": {
+                "input_tokens": getattr(usage, "prompt_tokens", None),
+                "output_tokens": getattr(usage, "completion_tokens", None),
+            },
+            "raw": response,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "provider": settings.provider,
+            "model": settings.active_model,
+            "error": f"{exc.__class__.__name__}: {exc}",
+            "text": "",
+            "usage": {},
+        }
+
+
+def call_llm_message(system_prompt: str, user_prompt: str, *, max_tokens: int | None = None) -> dict[str, object]:
+    settings = load_llm_settings()
+    if settings.provider == "google":
+        return call_google_message(system_prompt, user_prompt, max_tokens=max_tokens)
+    if settings.provider == "mistral":
+        return call_mistral_message(system_prompt, user_prompt, max_tokens=max_tokens)
+    return call_anthropic_message(system_prompt, user_prompt, max_tokens=max_tokens)
 
 
 def parse_json_response(text: str) -> tuple[dict[str, object] | None, str | None]:

@@ -722,6 +722,38 @@ Concretement, sur des documents charges par l'utilisateur :
 **La cle Claude API est configuree en local** et les modules LLM sont prets (`wf2_llm.py`, `wf2b_llm.py`, `wf3_llm.py`).
 L'activation LLM reelle est la prochaine priorite metier.
 
+## Evolution LLM multi-provider
+
+Le projet ne depend plus uniquement d'Anthropic :
+- `app/services/llm_client.py` supporte maintenant `anthropic` et `google`
+- le provider actif est pilote par `LLM_PROVIDER`
+- si `LLM_PROVIDER` est absent mais qu'une `GOOGLE_API_KEY` existe seule, Google peut devenir le provider par defaut
+- `GOOGLE_MODEL` permet de viser `gemini-2.5-flash` par defaut
+- si un modele Gemma est expose par le compte Google, il peut etre utilise via la meme variable `GOOGLE_MODEL`
+
+**Point de vigilance :**
+- l'integration Google est prete cote code et dependance (`google-genai`)
+- elle a ete compilee et importee sans erreur
+- le test API reel Google reste a faire des qu'une `GOOGLE_API_KEY` sera ajoutee dans `.env` ou dans les secrets Streamlit
+
+## Evolution Mistral
+
+Le projet supporte maintenant aussi `mistral` comme provider LLM :
+- cle : `MISTRAL_API_KEY`
+- variable de selection : `LLM_PROVIDER="mistral"`
+- modele par defaut retenu : `mistral-small-2603` (Mistral Small 4)
+
+Pourquoi ce choix :
+- `Mistral Small 4` est documente comme modele courant sur la doc officielle Mistral
+- `Ministral 8B` reste techniquement selectable via `MISTRAL_MODEL="ministral-8b-2410"`
+- mais il est documente comme deprecie, donc il ne doit pas etre le choix par defaut
+
+Etat de validation :
+- dependance `mistralai` installee
+- compilation Python OK
+- instanciation du client Mistral OK
+- appel API reel a faire quand une vraie `MISTRAL_API_KEY` sera ajoutee
+
 ## Fichiers importants a relire si besoin
 
 - `/Users/alexandrepaviel/Desktop/OF/application AAP ingénia/streamlit_app.py` — 53 lignes, routeur pur
