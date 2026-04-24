@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import streamlit as st
+from streamlit_extras.add_vertical_space import add_vertical_space
 
 from app.services.block_analysis import (
     apply_manual_completion,
@@ -91,23 +92,23 @@ def store_pipeline_outputs(
 
 # ── Shared display helpers ────────────────────────────────────────────────────
 
-def render_metadata(metadata: dict[str, str]) -> None:
-    st.markdown("### Metadonnees detectees")
+def render_metadata(metadata: dict[str, str], title: str = "Metadonnees detectees") -> None:
+    st.markdown(f"### {title}")
     cols = st.columns(2)
     items = list(metadata.items())
     for index, (label, value) in enumerate(items):
         cols[index % 2].write(f"**{label}** : {value}")
 
 
-def render_normalized_text(content: str, filename: str) -> None:
-    st.markdown("### Source normalisee")
-    st.text_area("Contenu normalise", content[:5000], height=260)
-    st.download_button(
-        "Telecharger la source normalisee",
-        data=content,
-        file_name=f"{Path(filename).stem}_normalise.md",
-        mime="text/markdown",
-    )
+def render_normalized_text(content: str, filename: str, *, expanded: bool = False, section_title: str = "Source normalisee") -> None:
+    with st.expander(section_title, expanded=expanded):
+        st.text_area("Contenu normalise", content[:5000], height=260)
+        st.download_button(
+            "Telecharger la source normalisee",
+            data=content,
+            file_name=f"{Path(filename).stem}_normalise.md",
+            mime="text/markdown",
+        )
 
 
 # ── Static pages ──────────────────────────────────────────────────────────────
@@ -119,10 +120,14 @@ def render_home() -> None:
     st.title("AAP Ingenia")
     st.caption("Back-office local de pre-analyse documentaire aligne sur les workflows Subly")
 
+    add_vertical_space(1)
+
     col1, col2, col3 = st.columns(3)
     col1.metric("Statut", "WF1 a WF4 locaux")
     col2.metric("Mode", "Prototype metier")
     col3.metric("Base documentaire", f"{base_doc_count} docs")
+
+    add_vertical_space(1)
 
     st.markdown(
         """
@@ -189,6 +194,8 @@ def render_document_catalog_page() -> None:
     col2.metric("Extensions", str(catalog["extension"].nunique()))
     col3.metric("Familles", str(catalog["famille_documentaire"].nunique()))
     col4.metric("Roles recommandes", str(catalog["role_workflow_recommande"].nunique()))
+
+    add_vertical_space(1)
 
     st.markdown("### Lecture rapide")
     st.write("**Repartition par role recommande**")
@@ -1096,8 +1103,9 @@ def render_block_summary(title: str, uploaded_files) -> None:
         "Repartition : "
         + ", ".join(f"`{file_type}` x {count}" for file_type, count in sorted(type_counts.items()))
     )
-    render_metadata(assess_block_completeness(uploaded_files))
-    render_metadata(collect_block_insights(uploaded_files))
+    with st.expander("Voir la synthese detaillee du bloc", expanded=False):
+        render_metadata(assess_block_completeness(uploaded_files), title="Completude du bloc")
+        render_metadata(collect_block_insights(uploaded_files), title="Signaux detectes dans le bloc")
 
 
 def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -> None:
@@ -1114,22 +1122,24 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
 
     if suffix in {".txt", ".md"}:
         text_content = parse_text_bytes(file_bytes)
-        render_metadata(extract_text_metadata(text_content, uploaded_file.name))
-        st.markdown("### Apercu texte")
-        st.text_area("Contenu detecte", text_content[:5000], height=250)
-        render_normalized_text(text_content, uploaded_file.name)
+        with st.expander("Voir les metadonnees detectees", expanded=False):
+            render_metadata(extract_text_metadata(text_content, uploaded_file.name))
+        with st.expander("Voir l'apercu texte", expanded=False):
+            st.text_area("Contenu detecte", text_content[:5000], height=250)
+        render_normalized_text(text_content, uploaded_file.name, expanded=False)
         st.write("Etape suivante : nettoyer et structurer ce texte.")
         return
 
     if suffix == ".csv":
         dataframe = parse_csv_bytes(file_bytes)
-        render_metadata(extract_table_metadata(dataframe, uploaded_file.name))
-        st.markdown("### Apercu tabulaire")
-        st.dataframe(dataframe, use_container_width=True)
+        with st.expander("Voir les metadonnees detectees", expanded=False):
+            render_metadata(extract_table_metadata(dataframe, uploaded_file.name))
+        with st.expander("Voir l'apercu tabulaire", expanded=False):
+            st.dataframe(dataframe, use_container_width=True)
         st.write(f"Nombre de lignes : `{len(dataframe)}`")
         st.write(f"Nombre de colonnes : `{len(dataframe.columns)}`")
         normalized_text = dataframe_to_markdown(dataframe, uploaded_file.name)
-        render_normalized_text(normalized_text, uploaded_file.name)
+        render_normalized_text(normalized_text, uploaded_file.name, expanded=False)
         return
 
     if suffix == ".xlsx":
@@ -1148,30 +1158,31 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
         metadata = extract_table_metadata(first_df, uploaded_file.name)
         metadata["Nombre de feuilles"] = str(len(sheet_names))
         metadata["Feuilles metier"] = str(len(displayed_sheets))
-        render_metadata(metadata)
+        with st.expander("Voir les metadonnees detectees", expanded=False):
+            render_metadata(metadata)
 
-        st.markdown("### Apercu Excel par feuille")
-        for sheet_name, sheet_df in displayed_sheets.items():
-            csv_content = sheet_df.to_csv(index=False)
-            with st.expander(f"Feuille : {sheet_name}", expanded=False):
-                st.dataframe(sheet_df, use_container_width=True)
-                st.write(f"Lignes : `{len(sheet_df)}`")
-                st.write(f"Colonnes : `{len(sheet_df.columns)}`")
-                st.text_area(
-                    f"CSV genere - {sheet_name}",
-                    csv_content[:5000],
-                    height=180,
-                    key=f"csv_preview_{uploaded_file.name}_{sheet_name}",
-                )
-                st.download_button(
-                    f"Telecharger {sheet_name} en CSV",
-                    data=csv_content,
-                    file_name=f"{Path(uploaded_file.name).stem}_{sheet_name}.csv",
-                    mime="text/csv",
-                    key=f"csv_download_{uploaded_file.name}_{sheet_name}",
-                )
+        with st.expander("Voir l'apercu Excel par feuille", expanded=False):
+            for sheet_name, sheet_df in displayed_sheets.items():
+                csv_content = sheet_df.to_csv(index=False)
+                with st.expander(f"Feuille : {sheet_name}", expanded=False):
+                    st.dataframe(sheet_df, use_container_width=True)
+                    st.write(f"Lignes : `{len(sheet_df)}`")
+                    st.write(f"Colonnes : `{len(sheet_df.columns)}`")
+                    st.text_area(
+                        f"CSV genere - {sheet_name}",
+                        csv_content[:5000],
+                        height=180,
+                        key=f"csv_preview_{uploaded_file.name}_{sheet_name}",
+                    )
+                    st.download_button(
+                        f"Telecharger {sheet_name} en CSV",
+                        data=csv_content,
+                        file_name=f"{Path(uploaded_file.name).stem}_{sheet_name}.csv",
+                        mime="text/csv",
+                        key=f"csv_download_{uploaded_file.name}_{sheet_name}",
+                    )
         normalized_text = workbook_to_markdown(workbook, uploaded_file.name)
-        render_normalized_text(normalized_text, uploaded_file.name)
+        render_normalized_text(normalized_text, uploaded_file.name, expanded=False)
         return
 
     if suffix == ".pdf":
@@ -1188,12 +1199,13 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
             st.write("Il est possible que le document soit scanne ou image.")
             return
 
-        render_metadata(extract_text_metadata(pdf_text, uploaded_file.name))
-        st.markdown("### Apercu PDF")
-        st.text_area("Texte detecte", pdf_text[:5000], height=300)
+        with st.expander("Voir les metadonnees detectees", expanded=False):
+            render_metadata(extract_text_metadata(pdf_text, uploaded_file.name))
+        with st.expander("Voir l'apercu PDF", expanded=False):
+            st.text_area("Texte detecte", pdf_text[:5000], height=300)
         st.write(f"Pages lues : `{page_count}`")
         st.write(f"Pages avec texte : `{text_page_count}`")
-        render_normalized_text(pdf_text, uploaded_file.name)
+        render_normalized_text(pdf_text, uploaded_file.name, expanded=False)
         return
 
     if suffix == ".docx":
@@ -1203,19 +1215,20 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
             st.warning("Le document DOCX a ete charge, mais aucun texte exploitable n'a ete trouve.")
             return
 
-        render_metadata(extract_text_metadata(text_content, uploaded_file.name))
-        st.markdown("### Apercu DOCX")
-        st.text_area("Texte detecte", text_content[:5000], height=300)
+        with st.expander("Voir les metadonnees detectees", expanded=False):
+            render_metadata(extract_text_metadata(text_content, uploaded_file.name))
+        with st.expander("Voir l'apercu DOCX", expanded=False):
+            st.text_area("Texte detecte", text_content[:5000], height=300)
         st.write(f"Paragraphes detectes : `{paragraph_count}`")
-        st.markdown("### Conversion Markdown")
-        st.text_area("Markdown genere", markdown_content[:5000], height=260)
-        st.download_button(
-            "Telecharger en Markdown",
-            data=markdown_content,
-            file_name=f"{Path(uploaded_file.name).stem}.md",
-            mime="text/markdown",
-        )
-        render_normalized_text(markdown_content, uploaded_file.name)
+        with st.expander("Voir la conversion Markdown", expanded=False):
+            st.text_area("Markdown genere", markdown_content[:5000], height=260)
+            st.download_button(
+                "Telecharger en Markdown",
+                data=markdown_content,
+                file_name=f"{Path(uploaded_file.name).stem}.md",
+                mime="text/markdown",
+            )
+        render_normalized_text(markdown_content, uploaded_file.name, expanded=False)
         return
 
     st.write("Etape suivante : lecture du contenu et extraction de texte.")
@@ -1243,7 +1256,12 @@ def render_upload_block(title: str, help_text: str, uploader_key: str):
     st.divider()
     render_block_summary(title, uploaded_files)
     block_normalized_text = build_block_normalized_text(title, uploaded_files)
-    render_normalized_text(block_normalized_text, title.replace(" ", "_").lower())
+    render_normalized_text(
+        block_normalized_text,
+        title.replace(" ", "_").lower(),
+        expanded=False,
+        section_title="Source normalisee fusionnee du bloc",
+    )
 
     return uploaded_files
 
