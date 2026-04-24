@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/27038795/README.md)
+[README.md](https://github.com/user-attachments/files/27040355/README.md)
 # AAP Ingenia
 
 AAP Ingenia est un prototype de back-office pour analyser des appels a projets et appels d'offres, a partir d'une base documentaire et d'un futur pipeline d'IA documentaire.
@@ -12,7 +12,8 @@ Le prototype actuel sert a :
 - centraliser la vision du projet ;
 - tester localement les workflows `WF1` a `WF4` ;
 - integrer une base documentaire locale exploitable ;
-- preparer `Supabase`, `n8n` et les futurs workflows IA.
+- preparer `Supabase` et les futurs workflows IA ;
+- amorcer des appels LLM directs depuis Python, sans dependre de `n8n` pour l'instant.
 
 ## Structure du projet
 
@@ -70,11 +71,13 @@ streamlit run streamlit_app.py
 - workflows `WF1` a `WF4` : disponibles localement ;
 - structure Python modulaire : amorcee ;
 - base documentaire : cataloguée localement ;
-- Supabase : prepare mais pas encore lance localement.
+- Supabase : prepare mais pas encore lance localement ;
+- securite minimale Supabase : activee (`RLS` sur les tables publiques, bucket documents prive) ;
+- LLM : ossature directe Python prete, cle API encore absente.
 
 ## Prochaines etapes conseillees
 
 1. Stabiliser les cas reels et les comparaisons critere par critere.
 2. Brancher la stack locale `Supabase` quand le CLI et Docker seront disponibles.
-3. Connecter ensuite `n8n` et les appels LLM.
+3. Activer un premier appel LLM reel dans `WF2a` via `app/services/llm_client.py`.
 4. Continuer a sortir la logique metier hors de `streamlit_app.py`.
