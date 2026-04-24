@@ -1,131 +1,48 @@
+from __future__ import annotations
+
+from copy import deepcopy
 from pathlib import Path
-from io import BytesIO
 import re
 
-import pandas as pd
 import streamlit as st
-from docx import Document
-from pypdf import PdfReader
-from pypdf.errors import PdfReadError
-
-
-ROOT_DIR = Path(__file__).parent
-SAMPLE_CSV = ROOT_DIR / "data" / "samples" / "converted_data.csv"
-
-
-@st.cache_data
-def load_demo_data() -> pd.DataFrame:
-    if not SAMPLE_CSV.exists():
-        return pd.DataFrame()
-    return pd.read_csv(SAMPLE_CSV)
-
-
-def docx_to_markdown(document: Document) -> str:
-    blocks = []
-    for paragraph in document.paragraphs:
-        text = paragraph.text.strip()
-        if not text:
-            continue
-        if paragraph.style and "heading" in paragraph.style.name.lower():
-            blocks.append(f"## {text}")
-        else:
-            blocks.append(text)
-    return "\n\n".join(blocks)
-
-
-def get_uploaded_suffix(uploaded_file) -> str:
-    return Path(uploaded_file.name).suffix.lower() or "inconnu"
-
-
-def get_uploaded_bytes(uploaded_file) -> bytes:
-    return uploaded_file.getvalue()
-
-
-def parse_text_bytes(file_bytes: bytes) -> str:
-    return file_bytes.decode("utf-8", errors="ignore")
-
-
-def parse_csv_bytes(file_bytes: bytes) -> pd.DataFrame:
-    return pd.read_csv(BytesIO(file_bytes))
-
-
-def parse_excel_bytes(file_bytes: bytes) -> dict[str, pd.DataFrame]:
-    return pd.read_excel(BytesIO(file_bytes), sheet_name=None)
-
-
-def parse_pdf_bytes(file_bytes: bytes) -> tuple[str, int, int, str | None]:
-    try:
-        reader = PdfReader(BytesIO(file_bytes))
-        pages_text = []
-        for page in reader.pages:
-            page_text = page.extract_text() or ""
-            if page_text.strip():
-                pages_text.append(page_text.strip())
-        return "\n\n".join(pages_text), len(reader.pages), len(pages_text), None
-    except PdfReadError as exc:
-        return "", 0, 0, f"PDF illisible par le parseur ({exc})"
-    except Exception as exc:
-        return "", 0, 0, f"Erreur de lecture PDF ({exc.__class__.__name__})"
-
-
-def parse_docx_bytes(file_bytes: bytes) -> tuple[str, str, int]:
-    document = Document(BytesIO(file_bytes))
-    paragraphs = [p.text.strip() for p in document.paragraphs if p.text.strip()]
-    text_content = "\n\n".join(paragraphs)
-    markdown_content = docx_to_markdown(document)
-    return text_content, markdown_content, len(paragraphs)
-
-
-def extract_text_metadata(text: str, filename: str) -> dict[str, str]:
-    compact_text = re.sub(r"\s+", " ", text).strip()
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-
-    title = lines[0] if lines else Path(filename).stem
-
-    date_match = re.search(
-        r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})\b",
-        compact_text,
-    )
-    amount_match = re.search(
-        r"\b\d[\d\s.,]{2,}\s?(?:€|euros?)\b",
-        compact_text,
-        flags=re.IGNORECASE,
-    )
-    org_match = re.search(
-        r"\b(Région|Region|CNM|ADEME|BPI|France Travail|DEETS|Europe|Etat|Minist[eè]re)\b",
-        compact_text,
-        flags=re.IGNORECASE,
-    )
-
-    lower_name = filename.lower()
-    if "appel" in lower_name or "aap" in lower_name:
-        document_type = "appel a projets"
-    elif "formulaire" in lower_name:
-        document_type = "formulaire"
-    elif "cadre" in lower_name:
-        document_type = "cadre d'intervention"
-    elif "reglement" in lower_name:
-        document_type = "reglement"
-    else:
-        document_type = "document texte"
-
-    return {
-        "Titre probable": title[:120],
-        "Type probable": document_type,
-        "Date detectee": date_match.group(1) if date_match else "Non detectee",
-        "Montant detecte": amount_match.group(0) if amount_match else "Non detecte",
-        "Organisme detecte": org_match.group(1) if org_match else "Non detecte",
-    }
-
-
-def extract_table_metadata(dataframe: pd.DataFrame, filename: str) -> dict[str, str]:
-    return {
-        "Nom du fichier": filename,
-        "Type probable": "tableau",
-        "Nombre de lignes": str(len(dataframe)),
-        "Nombre de colonnes": str(len(dataframe.columns)),
-        "Colonnes detectees": ", ".join(str(col) for col in list(dataframe.columns)[:6]) or "Aucune",
-    }
+from app.services.data_loader import (
+    load_document_catalog,
+    load_smoke_test_results,
+    load_swot_data as load_demo_data,
+)
+from app.services.document_catalog import build_smoke_test_case
+from app.services.metadata import (
+    add_detected_value,
+    extract_keywords_from_text,
+    extract_table_metadata,
+    extract_text_metadata,
+    format_detected_values,
+)
+from app.services.normalizers import (
+    classify_sheet,
+    dataframe_to_markdown,
+    filter_business_sheets,
+    workbook_to_markdown,
+)
+from app.services.parsers import (
+    get_uploaded_bytes,
+    get_uploaded_suffix,
+    parse_csv_bytes,
+    parse_docx_bytes,
+    parse_excel_bytes,
+    parse_pdf_bytes,
+    parse_text_bytes,
+)
+from app.services.wf2 import (
+    build_bridge_from_wf2,
+    extract_wf2a_structured,
+    extract_wf2b_structured,
+    summarize_wf2b_client_profile,
+    summarize_wf2b_project_data,
+)
+from app.services.wf3 import build_wf3_analysis
+from app.services.wf4 import build_wf4_outputs
+from app.services.supabase_bridge import describe_supabase_readiness
 
 
 def render_metadata(metadata: dict[str, str]) -> None:
@@ -134,30 +51,6 @@ def render_metadata(metadata: dict[str, str]) -> None:
     items = list(metadata.items())
     for index, (label, value) in enumerate(items):
         cols[index % 2].write(f"**{label}** : {value}")
-
-
-def normalize_detected_value(value: str) -> str:
-    return re.sub(r"\s+", " ", value).strip()
-
-
-def add_detected_value(store: dict[str, set[str]], key: str, value: str, source_name: str) -> None:
-    normalized = normalize_detected_value(value)
-    if not normalized or normalized in {"Non detectee", "Non detecte", "Aucun", "Aucune"}:
-        return
-    store.setdefault(normalized, set()).add(source_name)
-
-
-def format_detected_values(store: dict[str, set[str]]) -> str:
-    if not store:
-        return "Aucun"
-    items = sorted(
-        store.items(),
-        key=lambda item: (-len(item[1]), item[0].lower()),
-    )
-    return " | ".join(
-        f"{value} ({len(sources)} doc)" if len(sources) == 1 else f"{value} ({len(sources)} docs)"
-        for value, sources in items[:8]
-    )
 
 
 def choose_priority_value(block_candidates: dict[str, str], priority_order: list[str]) -> str:
@@ -189,25 +82,6 @@ def compute_global_prescore(
         label = "faible"
 
     return label, f"{score}/100"
-
-
-def extract_keywords_from_text(text: str) -> list[str]:
-    words = re.findall(r"\b[a-zA-ZÀ-ÿ][a-zA-ZÀ-ÿ-]{3,}\b", text.lower())
-    filtered = []
-    seen = set()
-    stop_words = {
-        "dans", "avec", "pour", "cette", "document", "documents", "projet",
-        "dossier", "client", "bloc", "fichier", "charge", "titre", "type",
-        "date", "montant", "organisme", "texte", "tableau", "feuille",
-    }
-    for word in words:
-        if len(word) <= 4 or word in stop_words or word in seen:
-            continue
-        seen.add(word)
-        filtered.append(word)
-        if len(filtered) >= 20:
-            break
-    return filtered
 
 
 def aggregate_block_text(uploaded_files) -> str:
@@ -335,57 +209,7 @@ def build_block_recommendations(block_name: str, insights: dict[str, str], crite
 
 
 def extract_wf2a_dossier_criteria(uploaded_files) -> list[dict[str, str]]:
-    combined_text = aggregate_block_text(uploaded_files)
-    criteria: list[dict[str, str]] = []
-
-    date_matches = re.findall(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})\b", combined_text)
-    amount_matches = re.findall(r"\b\d[\d\s.,]{2,}\s?(?:€|euros?)\b", combined_text, flags=re.IGNORECASE)
-
-    if date_matches:
-        criteria.append({
-            "categorie": "obligatoire",
-            "domaine": "administratif",
-            "libelle": "Date de reference detectee",
-            "detail": date_matches[0],
-        })
-
-    if amount_matches:
-        criteria.append({
-            "categorie": "souhaitable",
-            "domaine": "financier",
-            "libelle": "Montant detecte dans le dossier",
-            "detail": amount_matches[0],
-        })
-
-    keyword_rules = [
-        ("eligibilite", "obligatoire", "administratif", "Condition d'eligibilite detectee"),
-        ("candidature", "obligatoire", "administratif", "Element de candidature detecte"),
-        ("budget", "souhaitable", "financier", "Element budgetaire detecte"),
-        ("planning", "souhaitable", "technique", "Element de planning detecte"),
-        ("calendrier", "souhaitable", "technique", "Element de calendrier detecte"),
-        ("piece", "obligatoire", "administratif", "Piece demandee detectee"),
-        ("obligatoire", "bloquant", "administratif", "Mention explicite d'obligation detectee"),
-    ]
-
-    for keyword, category, domain, label in keyword_rules:
-        if keyword in combined_text:
-            criteria.append({
-                "categorie": category,
-                "domaine": domain,
-                "libelle": label,
-                "detail": f"Mot-cle repere : {keyword}",
-            })
-
-    unique_criteria = []
-    seen = set()
-    for criterion in criteria:
-        key = (criterion["libelle"], criterion["detail"])
-        if key in seen:
-            continue
-        seen.add(key)
-        unique_criteria.append(criterion)
-
-    return unique_criteria[:12]
+    return extract_wf2a_structured(uploaded_files).get("criteres", [])
 
 
 def render_wf2a_dossier_section(dossier_files) -> None:
@@ -395,11 +219,23 @@ def render_wf2a_dossier_section(dossier_files) -> None:
         st.info("Aucun document dossier charge pour lancer l'extraction WF2a locale.")
         return
 
-    criteria = extract_wf2a_dossier_criteria(dossier_files)
+    wf2a = extract_wf2a_structured(dossier_files)
+    criteria = wf2a.get("criteres", [])
+    metadata = wf2a.get("metadata", {})
 
     if not criteria:
         st.warning("Aucun critere explicite n'a ete detecte dans le bloc dossier.")
         return
+
+    st.markdown("### Metadata WF2a")
+    render_metadata({
+        "Type dossier detecte": metadata.get("type_dossier_detecte", "autre"),
+        "Financeur detecte": metadata.get("financeur_detecte", "Non detecte"),
+        "Montant max detecte": metadata.get("montant_max_detecte", "Non detecte"),
+        "Date limite detectee": metadata.get("date_limite_detectee", "Non detectee"),
+        "Nombre de criteres": str(metadata.get("nb_criteres_extraits", 0)),
+        "Mode extraction": metadata.get("mode_extraction", "inconnu"),
+    })
 
     st.write(f"{len(criteria)} critere(s) detecte(s)")
     for index, criterion in enumerate(criteria, start=1):
@@ -407,63 +243,27 @@ def render_wf2a_dossier_section(dossier_files) -> None:
             f"**{index}. {criterion['libelle']}**  \n"
             f"Categorie : `{criterion['categorie']}`  \n"
             f"Domaine : `{criterion['domaine']}`  \n"
-            f"Detail : {criterion['detail']}"
+            f"Detail : {criterion['detail']}  \n"
+            f"Source document : `{criterion.get('source_document', 'inconnu')}`  \n"
+            f"Niveau de confiance : `{criterion.get('niveau_confiance', 'moyen')}`  \n"
+            f"Validation requise : `{criterion.get('necessite_validation', False)}`  \n"
+            f"Source texte : {criterion.get('source_texte', '')[:220]}"
         )
 
 
 def extract_wf2b_client_profile(client_files) -> dict[str, str]:
-    text = aggregate_block_text(client_files)
-
-    legal_forms = ["association", "sas", "sarl", "ei", "micro-entreprise", "entreprise individuelle"]
-    detected_legal_form = next((form for form in legal_forms if form in text), "Non detectee")
-
-    siret_match = re.search(r"\b\d{14}\b", text)
-    email_match = re.search(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b", text)
-    phone_match = re.search(r"(\+262|0)[0-9\s.-]{8,}", text)
-
-    activity_keywords = [
-        "formation", "culture", "musique", "audiovisuel", "numerique",
-        "spectacle", "production", "association", "studio",
-    ]
-    detected_activities = [keyword for keyword in activity_keywords if keyword in text]
-
-    return {
-        "forme_juridique": detected_legal_form,
-        "siret": siret_match.group(0) if siret_match else "Non detecte",
-        "email": email_match.group(0) if email_match else "Non detecte",
-        "telephone": phone_match.group(0).strip() if phone_match else "Non detecte",
-        "activites_detectees": ", ".join(detected_activities[:6]) if detected_activities else "Aucune",
-    }
+    wf2b = extract_wf2b_structured(client_files, [])
+    return summarize_wf2b_client_profile(wf2b)
 
 
 def extract_wf2b_project_data(project_files) -> dict[str, str]:
-    text = aggregate_block_text(project_files)
-
-    amount_match = re.search(r"\b\d[\d\s.,]{2,}\s?(?:€|euros?)\b", text, flags=re.IGNORECASE)
-    date_matches = re.findall(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})\b", text)
-
-    objective_keywords = [
-        "objectif", "public", "beneficiaire", "planning", "calendrier",
-        "budget", "financement", "action", "atelier", "accompagnement",
-    ]
-    detected_objectives = [keyword for keyword in objective_keywords if keyword in text]
-
-    project_title = "Non detecte"
-    for line in [line.strip() for line in text.splitlines() if line.strip()]:
-        if len(line) > 8:
-            project_title = line[:120]
-            break
-
-    return {
-        "titre_projet": project_title,
-        "montant_detecte": amount_match.group(0) if amount_match else "Non detecte",
-        "dates_detectees": ", ".join(date_matches[:5]) if date_matches else "Aucune",
-        "elements_detectes": ", ".join(detected_objectives[:8]) if detected_objectives else "Aucun",
-    }
+    wf2b = extract_wf2b_structured([], project_files)
+    return summarize_wf2b_project_data(wf2b)
 
 
 def render_wf2b_section(client_files, project_files) -> None:
     st.subheader("WF2b local - Profil client et donnees projet")
+    wf2b = extract_wf2b_structured(client_files, project_files)
 
     col1, col2 = st.columns(2)
 
@@ -472,52 +272,161 @@ def render_wf2b_section(client_files, project_files) -> None:
         if not client_files:
             st.info("Aucun document client charge pour l'extraction WF2b locale.")
         else:
-            render_metadata(extract_wf2b_client_profile(client_files))
+            render_metadata(summarize_wf2b_client_profile(wf2b))
 
     with col2:
         st.markdown("### Donnees projet")
         if not project_files:
             st.info("Aucun document projet charge pour l'extraction WF2b locale.")
         else:
-            render_metadata(extract_wf2b_project_data(project_files))
+            render_metadata(summarize_wf2b_project_data(wf2b))
+
+    with st.expander("Voir la structure WF2b preparee pour un futur LLM", expanded=False):
+        profil_client = wf2b.get("profil_client", {})
+        donnees_projet = wf2b.get("donnees_projet", {})
+        st.write("**Profil client structure**")
+        render_metadata({
+            "Nom structure": profil_client.get("nom_structure", {}).get("value", "Non detecte"),
+            "Forme juridique": profil_client.get("forme_juridique", {}).get("value", "Non detectee"),
+            "Source client": profil_client.get("forme_juridique", {}).get("source_document", ""),
+            "Confiance forme juridique": profil_client.get("forme_juridique", {}).get("niveau_confiance", "moyen"),
+        })
+        st.write("**Donnees projet structurees**")
+        render_metadata({
+            "Titre projet": donnees_projet.get("titre_projet", {}).get("value", "Non detecte"),
+            "Montant projet": donnees_projet.get("montant_detecte", {}).get("value", "Non detecte"),
+            "Source projet": donnees_projet.get("titre_projet", {}).get("source_document", ""),
+            "Confiance montant": donnees_projet.get("montant_detecte", {}).get("niveau_confiance", "moyen"),
+        })
 
 
 def build_comparable_bridge(dossier_files, client_files, project_files) -> dict[str, str]:
-    dossier_criteria = extract_wf2a_dossier_criteria(dossier_files) if dossier_files else []
-    client_profile = extract_wf2b_client_profile(client_files) if client_files else {}
-    project_data = extract_wf2b_project_data(project_files) if project_files else {}
+    wf2a = extract_wf2a_structured(dossier_files) if dossier_files else {"criteres": [], "metadata": {}}
+    wf2b = extract_wf2b_structured(client_files, project_files) if (client_files or project_files) else {
+        "profil_client": {},
+        "donnees_projet": {},
+    }
+    return build_bridge_from_wf2(wf2a, wf2b)
 
-    bridge = {
-        "type_structure_requise": "A verifier",
-        "date_limite_dossier": "Aucune",
-        "montant_dossier": "Aucun",
-        "conditions_dossier": "Aucune",
-        "type_structure_client": client_profile.get("forme_juridique", "Non detectee"),
-        "identite_client": client_profile.get("activites_detectees", "Aucune"),
-        "montant_projet": project_data.get("montant_detecte", "Non detecte"),
-        "dates_projet": project_data.get("dates_detectees", "Aucune"),
-        "elements_projet": project_data.get("elements_detectes", "Aucun"),
+
+def _manual_field_value(value: str) -> dict[str, object]:
+    return {
+        "value": value,
+        "source_document": "saisie_manuelle",
+        "source_texte": value,
+        "niveau_confiance": "moyen",
+        "necessite_validation": True,
+        "mode_extraction": "completion_manuelle",
     }
 
-    extracted_conditions = []
-    for criterion in dossier_criteria:
-        label = criterion.get("libelle", "")
-        detail = criterion.get("detail", "")
-        category = criterion.get("categorie", "")
 
-        if "date" in label.lower() and bridge["date_limite_dossier"] == "Aucune":
-            bridge["date_limite_dossier"] = detail
-        if "montant" in label.lower() and bridge["montant_dossier"] == "Aucun":
-            bridge["montant_dossier"] = detail
-        if category in {"obligatoire", "bloquant"}:
-            extracted_conditions.append(label)
-        if "association" in detail.lower():
-            bridge["type_structure_requise"] = "association"
+def _bridge_value_is_present(value: str, missing_values: set[str]) -> bool:
+    return bool(value) and value not in missing_values
 
-    if extracted_conditions:
-        bridge["conditions_dossier"] = " | ".join(extracted_conditions[:6])
 
-    return bridge
+def merge_completed_bridge_into_wf2(
+    wf2a_structured: dict[str, object],
+    wf2b_structured: dict[str, object],
+    completed_bridge: dict[str, str],
+) -> tuple[dict[str, object], dict[str, object]]:
+    merged_wf2a = deepcopy(wf2a_structured)
+    merged_wf2b = deepcopy(wf2b_structured)
+
+    profil_client = merged_wf2b.setdefault("profil_client", {})
+    donnees_projet = merged_wf2b.setdefault("donnees_projet", {})
+    criteres = merged_wf2a.setdefault("criteres", [])
+    metadata = merged_wf2a.setdefault("metadata", {})
+
+    if _bridge_value_is_present(completed_bridge.get("type_structure_client", ""), {"", "Non detectee"}):
+        profil_client["forme_juridique"] = _manual_field_value(completed_bridge["type_structure_client"])
+
+    if _bridge_value_is_present(completed_bridge.get("identite_client", ""), {"", "Aucune"}):
+        if not str(profil_client.get("nom_structure", {}).get("value", "")).strip() or profil_client.get("nom_structure", {}).get("value") == "Non detecte":
+            profil_client["nom_structure"] = _manual_field_value(completed_bridge["identite_client"])
+        profil_client["activites"] = [_manual_field_value(completed_bridge["identite_client"])]
+
+    if _bridge_value_is_present(completed_bridge.get("montant_projet", ""), {"", "Non detecte"}):
+        donnees_projet["montant_detecte"] = _manual_field_value(completed_bridge["montant_projet"])
+
+    if _bridge_value_is_present(completed_bridge.get("dates_projet", ""), {"", "Aucune"}):
+        donnees_projet["dates_detectees"] = [_manual_field_value(completed_bridge["dates_projet"])]
+
+    if _bridge_value_is_present(completed_bridge.get("elements_projet", ""), {"", "Aucun"}):
+        donnees_projet["elements_detectes"] = [_manual_field_value(completed_bridge["elements_projet"])]
+
+    def add_manual_criterion(
+        criterion_id: str,
+        categories: tuple[str, str, str],
+        bridge_key: str,
+        missing_values: set[str],
+    ) -> None:
+        value = completed_bridge.get(bridge_key, "")
+        if not _bridge_value_is_present(value, missing_values):
+            return
+        label, category, domain = categories
+        if any(str(item.get("libelle", "")).lower() == label.lower() for item in criteres):
+            return
+        criteres.append(
+            {
+                "id_local": criterion_id,
+                "categorie": category,
+                "domaine": domain,
+                "libelle": label,
+                "detail": value,
+                "source_document": "saisie_manuelle",
+                "source_texte": value,
+                "source_document_id": None,
+                "est_piece_exigee": "piece" in value.lower(),
+                "est_critere_eliminatoire": category == "bloquant",
+                "niveau_confiance": "moyen",
+                "necessite_validation": True,
+                "mode_extraction": "completion_manuelle",
+            }
+        )
+
+    add_manual_criterion(
+        "manual_structure_requirement",
+        ("Type de structure eligible", "obligatoire", "juridique"),
+        "type_structure_requise",
+        {"", "A verifier"},
+    )
+    add_manual_criterion(
+        "manual_deadline_requirement",
+        ("Date limite ou calendrier impose", "obligatoire", "administratif"),
+        "date_limite_dossier",
+        {"", "Aucune"},
+    )
+    add_manual_criterion(
+        "manual_budget_requirement",
+        ("Montant, plafond ou enveloppe du dispositif", "souhaitable", "financier"),
+        "montant_dossier",
+        {"", "Aucun"},
+    )
+    add_manual_criterion(
+        "manual_conditions_requirement",
+        ("Conditions d'eligibilite et pieces attendues", "obligatoire", "administratif"),
+        "conditions_dossier",
+        {"", "Aucune"},
+    )
+
+    if _bridge_value_is_present(completed_bridge.get("date_limite_dossier", ""), {"", "Aucune"}):
+        metadata["date_limite_detectee"] = completed_bridge["date_limite_dossier"]
+    if _bridge_value_is_present(completed_bridge.get("montant_dossier", ""), {"", "Aucun"}):
+        metadata["montant_max_detecte"] = completed_bridge["montant_dossier"]
+
+    metadata["nb_criteres_extraits"] = len(criteres)
+
+    return merged_wf2a, merged_wf2b
+
+
+def summarize_criterion_match_label(value: str) -> str:
+    mapping = {
+        "valide": "solide",
+        "a_confirmer": "a confirmer",
+        "manquant": "manquant",
+        "non_valide": "ecart",
+    }
+    return mapping.get(value, value or "a verifier")
 
 
 def apply_manual_completion(bridge: dict[str, str], overrides: dict[str, str]) -> dict[str, str]:
@@ -1049,8 +958,11 @@ def render_wf3_section(
         st.info("Le WF3 local demande des documents dans les 3 blocs : dossier, client et projet.")
         return
 
+    wf2a_structured = extract_wf2a_structured(dossier_files)
+    wf2b_structured = extract_wf2b_structured(client_files, project_files)
+
     if bridge is None:
-        bridge = build_comparable_bridge(dossier_files, client_files, project_files)
+        bridge = build_bridge_from_wf2(wf2a_structured, wf2b_structured)
     if global_bridge is None:
         fallback_block_files_map = {
             "Documents dossier": dossier_files,
@@ -1063,53 +975,189 @@ def render_wf3_section(
             fallback_cross_summary,
             bridge,
         )
-    wf3 = compute_wf3_local(bridge, global_bridge=global_bridge)
+    completed_wf2a, completed_wf2b = merge_completed_bridge_into_wf2(
+        wf2a_structured,
+        wf2b_structured,
+        bridge,
+    )
+    wf3 = build_wf3_analysis(
+        completed_wf2a,
+        completed_wf2b,
+        global_context_bridge=global_bridge,
+    )
 
-    col1, col2 = st.columns(2)
-    col1.metric("Statut", wf3["statut"])
-    col2.metric("Score local", wf3["score"])
+    counts = wf3.get("counts", {})
+    sous_scores = wf3.get("sous_scores", {})
+    results = list(wf3.get("resultats_criteres", []))
+    count_valide = counts.get("valide", 0)
+    count_confirm = counts.get("a_confirmer", 0)
+    count_missing = counts.get("manquant", 0)
+    count_invalid = counts.get("non_valide", 0)
+    prior_actions = []
+    for result in results:
+        if result.get("statut") in {"manquant", "non_valide", "a_confirmer"}:
+            action = str(result.get("action_requise", "")).strip()
+            if action and action not in prior_actions:
+                prior_actions.append(action)
 
-    st.markdown("### Controles fins")
-    fine_col1, fine_col2, fine_col3, fine_col4, fine_col5 = st.columns(5)
-    fine_col1.metric("Structure", summarize_control_label(wf3["structure"]))
-    fine_col2.metric("Calendrier", summarize_control_label(wf3["calendrier"]))
-    fine_col3.metric("Budget", summarize_control_label(wf3["budget"]))
-    fine_col4.metric("Conditions", summarize_control_label(wf3["conditions"]))
-    fine_col5.metric("Capacite", summarize_control_label(wf3["capacite"]))
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Statut", str(wf3.get("statut_eligibilite", "a confirmer")))
+    col2.metric("Score global", f"{wf3.get('score_global', 0)}/100")
+    col3.metric("Confiance", str(wf3.get("niveau_confiance", "moyen")))
+
+    st.markdown("### Vue rapide")
+    quick_col1, quick_col2, quick_col3, quick_col4 = st.columns(4)
+    quick_col1.metric("Criteres valides", str(count_valide))
+    quick_col2.metric("A confirmer", str(count_confirm))
+    quick_col3.metric("Manquants", str(count_missing))
+    quick_col4.metric("Ecarts", str(count_invalid))
+
+    st.markdown("### Sous-scores")
+    score_col1, score_col2, score_col3, score_col4 = st.columns(4)
+    score_col1.metric("Bloc client", f"{sous_scores.get('bloc_client', 0)}/100")
+    score_col2.metric("Bloc projet", f"{sous_scores.get('bloc_projet', 0)}/100")
+    score_col3.metric("Bloc mixte", f"{sous_scores.get('bloc_mixte', 0)}/100")
+    score_col4.metric("Fiabilite doc", f"{sous_scores.get('fiabilite_documentaire', 0)}/100")
 
     st.markdown("### Contexte global integre")
     global_col1, global_col2, global_col3 = st.columns(3)
-    global_col1.metric("Contexte global", summarize_readiness_label(wf3["contexte_global"]))
-    global_col2.metric("Fiabilite globale", wf3["fiabilite_globale"])
-    global_col3.metric("Risque global", summarize_risk_label(wf3["risque_global"]))
+    global_col1.metric("Preparation", summarize_readiness_label(global_bridge.get("etat_global_documentaire", "inconnue")))
+    global_col2.metric("Solidite", summarize_prescore_label(global_bridge.get("prescore_global_documentaire", "inconnue")))
+    risk_value = "modere" if wf3.get("niveau_confiance") == "haut" else "moyen" if wf3.get("niveau_confiance") == "moyen" else "eleve"
+    global_col3.metric("Risque", summarize_risk_label(risk_value))
 
-    st.markdown("### Justifications")
-    if wf3.get("justifications_items"):
-        for item in wf3["justifications_items"]:
+    st.markdown("### Resume executif")
+    st.write(str(wf3.get("resume_executif", "Aucun resume disponible.")))
+
+    st.markdown("### Actions prioritaires")
+    if prior_actions:
+        for item in prior_actions[:8]:
             st.write(f"- {item}")
     else:
-        st.write(wf3["justifications"])
+        st.write("- Aucune action prioritaire immediate")
 
-    st.markdown("### Manques a combler")
-    if wf3.get("manques_items"):
-        for item in wf3["manques_items"]:
-            st.write(f"- {item}")
-    else:
-        st.write(wf3["manques"])
-
-    st.markdown("### Actions globales prealables")
-    if wf3.get("actions_globales_items"):
-        for item in wf3["actions_globales_items"]:
-            st.write(f"- {item}")
-    else:
-        st.write(wf3["actions_globales"])
-
-    with st.expander("Voir le detail des comparaisons fines", expanded=False):
-        if wf3.get("details_items"):
-            for item in wf3["details_items"]:
-                st.write(f"- {item}")
+    with st.expander("Voir le matching critere par critere", expanded=False):
+        if not results:
+            st.info("Aucun critere exploitable n'a ete produit par WF2a.")
         else:
-            st.write(wf3["details"])
+            rows = []
+            for result in results:
+                rows.append(
+                    {
+                        "Critere": result.get("libelle", ""),
+                        "Bloc": result.get("bloc_cible", ""),
+                        "Statut": summarize_criterion_match_label(str(result.get("statut", ""))),
+                        "Score": result.get("score", 0),
+                        "Confiance": result.get("niveau_confiance", "moyen"),
+                        "Source dossier": result.get("source_document", ""),
+                        "Donnee utilisee": result.get("donnee_utilisee", ""),
+                    }
+                )
+            st.dataframe(rows, use_container_width=True)
+
+            for index, result in enumerate(results, start=1):
+                st.markdown(
+                    f"**{index}. {result.get('libelle', 'Critere')}**  \n"
+                    f"Statut : `{summarize_criterion_match_label(str(result.get('statut', 'a_confirmer')))}`  \n"
+                    f"Score : `{result.get('score', 0)}/100`  \n"
+                    f"Bloc cible : `{result.get('bloc_cible', 'mixte')}`  \n"
+                    f"Source dossier : `{result.get('source_document', 'inconnu')}`  \n"
+                    f"Justification : {result.get('justification', 'Aucune')}  \n"
+                    f"Action requise : {result.get('action_requise', 'Aucune')}  \n"
+                    f"Donnee utilisee : {result.get('donnee_utilisee', 'Aucune')}  \n"
+                    f"Ecart : {result.get('ecart', 'Aucun') or 'Aucun'}"
+                )
+
+
+def render_wf4_section(
+    dossier_files,
+    client_files,
+    project_files,
+    bridge: dict[str, str] | None = None,
+    global_bridge: dict[str, str] | None = None,
+) -> None:
+    st.subheader("WF4 local - Rapport, pre-remplissage et suggestions")
+
+    if not dossier_files or not client_files or not project_files:
+        st.info("Le WF4 local demande un dossier, un client et un projet pour generer des sorties utiles.")
+        return
+
+    wf2a_structured = extract_wf2a_structured(dossier_files)
+    wf2b_structured = extract_wf2b_structured(client_files, project_files)
+    if bridge is None:
+        bridge = build_bridge_from_wf2(wf2a_structured, wf2b_structured)
+    if global_bridge is None:
+        fallback_block_files_map = {
+            "Documents dossier": dossier_files,
+            "Documents client": client_files,
+            "Documents projet": project_files,
+        }
+        fallback_cross_summary = build_global_cross_block_summary(fallback_block_files_map)
+        global_bridge = build_global_context_bridge(
+            fallback_block_files_map,
+            fallback_cross_summary,
+            bridge,
+        )
+
+    completed_wf2a, completed_wf2b = merge_completed_bridge_into_wf2(
+        wf2a_structured,
+        wf2b_structured,
+        bridge,
+    )
+    wf3_analysis = build_wf3_analysis(
+        completed_wf2a,
+        completed_wf2b,
+        global_context_bridge=global_bridge,
+    )
+    wf4_outputs = build_wf4_outputs(completed_wf2b, wf3_analysis)
+
+    rapport = wf4_outputs.get("rapport_structured", {})
+    preremplissage = list(wf4_outputs.get("champs_preremplissage", []))
+    suggestions = list(wf4_outputs.get("suggestions", []))
+    report_markdown = str(wf4_outputs.get("rapport_markdown", ""))
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Type rapport", str(rapport.get("type_rapport", "complet")))
+    col2.metric("Format", str(rapport.get("format_export", "markdown")))
+    col3.metric("Suggestions", str(len(suggestions)))
+
+    st.markdown("### Rapport structure")
+    render_metadata({
+        "Statut": str(rapport.get("statut_eligibilite", "a confirmer")),
+        "Score global": f"{rapport.get('score_global', 0)}/100",
+        "Niveau de confiance": str(rapport.get("niveau_confiance", "moyen")),
+        "Points valides": str(len(rapport.get("points_valides", []))),
+        "Points a confirmer": str(len(rapport.get("points_a_confirmer", []))),
+        "Points bloquants": str(len(rapport.get("points_bloquants", []))),
+    })
+    st.write(str(rapport.get("resume_executif", "Aucun resume.")))
+
+    with st.expander("Voir le rapport markdown", expanded=False):
+        st.text_area("Rapport markdown", report_markdown, height=320)
+        st.download_button(
+            "Telecharger le rapport markdown",
+            data=report_markdown,
+            file_name="rapport_wf4_local.md",
+            mime="text/markdown",
+            key="download_wf4_markdown",
+        )
+
+    st.markdown("### Champs de pre-remplissage")
+    if preremplissage:
+        st.dataframe(preremplissage, use_container_width=True)
+    else:
+        st.info("Aucun champ de pre-remplissage disponible.")
+
+    st.markdown("### Suggestions alternatives")
+    if suggestions:
+        for index, suggestion in enumerate(suggestions, start=1):
+            st.markdown(
+                f"**{index}. {suggestion.get('nom', 'Suggestion')}**  \n"
+                f"Pertinence : `{suggestion.get('score_pertinence', 0)}/100`  \n"
+                f"Justification : {suggestion.get('justification', 'Aucune justification')}"
+            )
+    else:
+        st.info("Aucune suggestion alternative locale n'a ete detectee pour l'instant.")
 
 
 def collect_block_insights(uploaded_files) -> dict[str, str]:
@@ -1211,61 +1259,6 @@ def collect_block_insights(uploaded_files) -> dict[str, str]:
     }
 
 
-def dataframe_to_markdown(dataframe: pd.DataFrame, title: str) -> str:
-    preview_df = dataframe.head(20).fillna("")
-    headers = [str(col) for col in preview_df.columns]
-    header_row = "| " + " | ".join(headers) + " |"
-    separator_row = "| " + " | ".join(["---"] * len(headers)) + " |"
-
-    body_rows = []
-    for row in preview_df.itertuples(index=False, name=None):
-        values = [str(value).replace("\n", " ").strip() for value in row]
-        body_rows.append("| " + " | ".join(values) + " |")
-
-    table_markdown = "\n".join([header_row, separator_row] + body_rows)
-    return f"## {title}\n\n{table_markdown}"
-
-
-def workbook_to_markdown(workbook: dict[str, pd.DataFrame], title: str) -> str:
-    sections = [f"# {title}"]
-    for sheet_name, sheet_df in workbook.items():
-        sections.append(dataframe_to_markdown(sheet_df, sheet_name))
-    return "\n\n".join(sections)
-
-
-def classify_sheet(sheet_name: str) -> str:
-    normalized = sheet_name.lower().strip()
-    informative_keywords = [
-        "lisez",
-        "readme",
-        "read me",
-        "mode d'emploi",
-        "instructions",
-        "notice",
-        "sommaire",
-    ]
-    if any(keyword in normalized for keyword in informative_keywords):
-        return "informatif"
-    return "metier"
-
-
-def filter_business_sheets(workbook: dict[str, pd.DataFrame]) -> tuple[dict[str, pd.DataFrame], list[str]]:
-    business_sheets: dict[str, pd.DataFrame] = {}
-    informative_sheets: list[str] = []
-
-    for sheet_name, sheet_df in workbook.items():
-        category = classify_sheet(sheet_name)
-        if category == "informatif":
-            informative_sheets.append(sheet_name)
-        else:
-            business_sheets[sheet_name] = sheet_df
-
-    if not business_sheets:
-        return workbook, informative_sheets
-
-    return business_sheets, informative_sheets
-
-
 def render_normalized_text(content: str, filename: str) -> None:
     st.markdown("### Source normalisee")
     st.text_area("Contenu normalise", content[:5000], height=260)
@@ -1339,6 +1332,12 @@ def summarize_control_label(value: str) -> str:
     return value
 
 
+def split_display_items(value: str) -> list[str]:
+    if value in {"", "Aucun", "Aucune", "Aucune incoherence simple detectee"}:
+        return []
+    return [item.strip() for item in value.split(" | ") if item.strip()]
+
+
 def render_global_summary(summary_map: dict[str, list[dict[str, str]]]) -> None:
     st.subheader("Recapitulatif global")
     col1, col2, col3 = st.columns(3)
@@ -1364,31 +1363,39 @@ def render_cross_block_summary(summary: dict[str, str]) -> None:
     col1.metric("Preparation", summarize_readiness_label(summary.get("Etat global", "inconnu")))
     col2.metric("Solidite", summarize_prescore_label(summary.get("Pre-score global", "inconnu")))
 
-    st.markdown("### Vue d'ensemble")
+    st.markdown("### Lecture rapide")
     st.write(f"**Blocs disponibles** : {summary.get('Blocs disponibles', 'Aucun')}")
-    st.write(f"**Blocs manquants** : {summary.get('Blocs manquants', 'Aucun')}")
-    st.write(f"**Statut des blocs** : {summary.get('Statut des blocs', 'Aucun')}")
+    st.write(f"**Blocs encore manquants** : {summary.get('Blocs manquants', 'Aucun')}")
 
-    st.markdown("### Criteres par bloc")
-    st.write(f"**Dossier** : {summary.get('Criteres dossier', 'Aucun')}")
-    st.write(f"**Client** : {summary.get('Criteres client', 'Aucun')}")
-    st.write(f"**Projet** : {summary.get('Criteres projet', 'Aucun')}")
+    st.markdown("### Priorites retenues")
+    st.write(f"- Date de reference : {summary.get('Date prioritaire', 'Aucune')}")
+    st.write(f"- Organisme principal : {summary.get('Organisme prioritaire', 'Aucun')}")
+    st.write(f"- Montant de reference : {summary.get('Montant prioritaire', 'Aucun')}")
 
-    st.markdown("### Priorites detectees")
-    st.write(f"**Date prioritaire** : {summary.get('Date prioritaire', 'Aucune')}")
-    st.write(f"**Organisme prioritaire** : {summary.get('Organisme prioritaire', 'Aucun')}")
-    st.write(f"**Montant prioritaire** : {summary.get('Montant prioritaire', 'Aucun')}")
+    st.markdown("### Vigilances")
+    control_items = split_display_items(summary.get("Controle simple", "Aucun"))
+    issue_items = split_display_items(summary.get("Incoherences detectees", "Aucune"))
+    if control_items:
+        for item in control_items:
+            st.write(f"- {item}")
+    else:
+        st.write("- aucun controle simple remonte")
+    if issue_items:
+        for item in issue_items:
+            st.write(f"- {item}")
+    else:
+        st.write("- aucune incoherence simple detectee")
 
-    st.markdown("### Incoherences et controles")
-    st.write(f"**Controle simple** : {summary.get('Controle simple', 'Aucun')}")
-    st.write(f"**Incoherences detectees** : {summary.get('Incoherences detectees', 'Aucune')}")
-
-    st.markdown("### Actions recommandees")
-    st.write(f"**Action dossier** : {summary.get('Action dossier', 'Aucune')}")
-    st.write(f"**Action client** : {summary.get('Action client', 'Aucune')}")
-    st.write(f"**Action projet** : {summary.get('Action projet', 'Aucune')}")
+    st.markdown("### Actions par bloc")
+    st.write(f"- Dossier : {summary.get('Action dossier', 'Aucune')}")
+    st.write(f"- Client : {summary.get('Action client', 'Aucune')}")
+    st.write(f"- Projet : {summary.get('Action projet', 'Aucune')}")
 
     with st.expander("Voir les details detectes par bloc", expanded=False):
+        st.write(f"**Statut des blocs** : {summary.get('Statut des blocs', 'Aucun')}")
+        st.write(f"**Criteres dossier** : {summary.get('Criteres dossier', 'Aucun')}")
+        st.write(f"**Criteres client** : {summary.get('Criteres client', 'Aucun')}")
+        st.write(f"**Criteres projet** : {summary.get('Criteres projet', 'Aucun')}")
         st.write(f"**Organismes par bloc** : {summary.get('Organismes par bloc', 'Aucun')}")
         st.write(f"**Dates par bloc** : {summary.get('Dates par bloc', 'Aucune')}")
         st.write(f"**Montants par bloc** : {summary.get('Montants par bloc', 'Aucun')}")
@@ -1838,23 +1845,26 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
 
 
 def render_home() -> None:
+    catalog = load_document_catalog()
+    base_doc_count = len(catalog) if not catalog.empty else 0
+
     st.title("AAP Ingenia")
-    st.caption("Prototype simple pour cadrer un futur outil d'analyse de dossiers")
+    st.caption("Back-office local de pre-analyse documentaire aligne sur les workflows Subly")
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("Statut", "Prototype en ligne")
-    col2.metric("Mode", "Simple et stable")
-    col3.metric("Donnees demo", "Disponibles")
+    col1.metric("Statut", "WF1 a WF4 locaux")
+    col2.metric("Mode", "Prototype metier")
+    col3.metric("Base documentaire", f"{base_doc_count} docs")
 
     st.markdown(
         """
-        Cette version sert a garder une base propre et facile a deployer.
+        Cette version sert maintenant a valider un vrai flux local :
 
-        Elle permet deja de :
-        - presenter le projet ;
-        - visualiser des donnees de demonstration ;
-        - tester un premier upload de document ;
-        - preparer la suite sans complexite inutile.
+        - ingestion dossier / client / projet ;
+        - extraction structuree `WF2a` et `WF2b` ;
+        - matching critere par critere `WF3` ;
+        - sorties locales `WF4` : rapport, pre-remplissage et suggestions ;
+        - preparation de la base documentaire et de Supabase.
         """
     )
 
@@ -1863,16 +1873,16 @@ def render_project() -> None:
     st.subheader("Ou en est le projet ?")
     st.markdown(
         """
-        - Le cadrage produit est deja bien avance
-        - Le schema de donnees a ete reflechi
-        - L'application web commence simplement
-        - La connexion a une base reelle viendra plus tard
+        - Le cadrage produit et le schema cible sont deja poses dans `contexte/`
+        - Les 4 sorties metier sont maintenant representees localement
+        - La base documentaire locale est integree en catalogue
+        - Le pont Supabase est prepare mais pas encore lance localement
         """
     )
 
-    st.subheader("Prochaine etape conseillee")
+    st.subheader("Cap actuel")
     st.write(
-        "Construire un parcours d'upload simple, puis afficher les metadonnees du fichier avant toute analyse automatisee."
+        "Stabiliser les cas reels, brancher Supabase, puis sortir progressivement la logique metier du gros fichier Streamlit."
     )
 
 
@@ -1889,6 +1899,90 @@ def render_demo_data() -> None:
     first_row = df.iloc[0]
     st.markdown("### Resume")
     st.write(first_row.get("resume_executif", "Aucun resume disponible."))
+
+
+def render_document_catalog_page() -> None:
+    st.subheader("Base documentaire integree")
+    st.write(
+        "Cette vue recense les documents du dossier de base locale pour preparer l'ingestion, les cas de test et le futur seed Supabase."
+    )
+
+    catalog = load_document_catalog()
+    if catalog.empty:
+        st.warning("Aucun document de base n'a ete detecte.")
+        return
+
+    role_counts = catalog["role_workflow_recommande"].value_counts()
+    family_counts = catalog["famille_documentaire"].value_counts()
+    ext_counts = catalog["extension"].value_counts()
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Documents", str(len(catalog)))
+    col2.metric("Extensions", str(catalog["extension"].nunique()))
+    col3.metric("Familles", str(catalog["famille_documentaire"].nunique()))
+    col4.metric("Roles recommandes", str(catalog["role_workflow_recommande"].nunique()))
+
+    st.markdown("### Lecture rapide")
+    st.write("**Repartition par role recommande**")
+    for role, count in role_counts.items():
+        st.write(f"- {role} : {count}")
+    st.write("**Top familles documentaires**")
+    for family, count in family_counts.head(8).items():
+        st.write(f"- {family} : {count}")
+
+    with st.expander("Voir le detail du catalogue", expanded=False):
+        st.dataframe(catalog, use_container_width=True)
+        st.write("**Top extensions**")
+        for extension, count in ext_counts.items():
+            st.write(f"- {extension} : {count}")
+
+    smoke_case = build_smoke_test_case()
+    with st.expander("Jeu de test documentaire retenu", expanded=False):
+        st.write("**Dossier**")
+        for item in smoke_case["dossier"]:
+            st.write(f"- {item.name}")
+        st.write("**Client**")
+        for item in smoke_case["client"]:
+            st.write(f"- {item.name}")
+        st.write("**Projet**")
+        for item in smoke_case["projet"]:
+            st.write(f"- {item.name}")
+
+    smoke_results = load_smoke_test_results()
+    if smoke_results:
+        wf3 = smoke_results.get("wf3", {})
+        st.markdown("### Resultat du smoke-test reel")
+        render_metadata({
+            "Statut": wf3.get("statut_eligibilite", "inconnu"),
+            "Score": f"{wf3.get('score_global', 0)}/100",
+            "Confiance": wf3.get("niveau_confiance", "inconnue"),
+            "Resume": wf3.get("resume_executif", "Aucun"),
+        })
+
+
+def render_supabase_page() -> None:
+    st.subheader("Preparation Supabase")
+    st.write(
+        "Cette vue prepare la base locale du projet : migrations, seed de demonstration, variables d'environnement et futur pont Python/Supabase."
+    )
+
+    readiness = describe_supabase_readiness()
+    render_metadata(readiness)
+
+    st.markdown("### Ce qui est prepare")
+    st.write("- schema SQL de reference a migrer vers `supabase/migrations/`")
+    st.write("- seed local de demonstration pour un premier dossier / client / documents")
+    st.write("- variables d'environnement Supabase pour le futur pont applicatif")
+    st.write("- service Python pret a initialiser un client Supabase si les cles sont configurees")
+
+    st.markdown("### Ce qui manque encore pour demarrer la stack")
+    st.write("- Supabase CLI local")
+    st.write("- runtime compatible Docker / OrbStack / Podman")
+    st.write("- vraies cles projet dans `.env`")
+
+    st.info(
+        "L'environnement actuel ne contient pas encore `npx` ni Docker, donc la structure est preparee mais la stack locale Supabase n'est pas lancee ici."
+    )
 
 
 def render_upload_block(title: str, help_text: str, uploader_key: str):
@@ -1969,8 +2063,8 @@ def render_upload() -> None:
     )
 
     st.divider()
-    diagnostic_tab, extraction_tab, bridge_tab = st.tabs(
-        ["Diagnostic prioritaire", "Extractions detaillees", "Ponts et completions"]
+    diagnostic_tab, extraction_tab, bridge_tab, wf4_tab = st.tabs(
+        ["Diagnostic prioritaire", "Extractions detaillees", "Ponts et completions", "WF4 sorties"]
     )
 
     with bridge_tab:
@@ -2005,6 +2099,15 @@ def render_upload() -> None:
                 block_files_map["Documents projet"],
             )
 
+    with wf4_tab:
+        render_wf4_section(
+            block_files_map["Documents dossier"],
+            block_files_map["Documents client"],
+            block_files_map["Documents projet"],
+            bridge=completed_bridge,
+            global_bridge=global_context_bridge,
+        )
+
 
 def main() -> None:
     st.set_page_config(
@@ -2019,6 +2122,8 @@ def main() -> None:
             "Accueil",
             "Projet",
             "Donnees demo",
+            "Base documentaire",
+            "Supabase",
             "Upload",
         ],
     )
@@ -2029,6 +2134,10 @@ def main() -> None:
         render_project()
     elif page == "Donnees demo":
         render_demo_data()
+    elif page == "Base documentaire":
+        render_document_catalog_page()
+    elif page == "Supabase":
+        render_supabase_page()
     else:
         render_upload()
 
