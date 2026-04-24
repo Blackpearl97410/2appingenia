@@ -33,6 +33,12 @@ def _join_field_values(items: list[dict[str, Any]] | None, default: str = "A com
     return " | ".join(values) if values else default
 
 
+def _split_joined_values(value: str) -> list[str]:
+    if not value or value == "A completer":
+        return []
+    return [item.strip() for item in value.split("|") if item.strip()]
+
+
 def _infer_call_requirements(wf3_analysis: dict[str, object]) -> dict[str, Any]:
     results = list(wf3_analysis.get("resultats_criteres", []))
     combined = " ".join(
@@ -249,76 +255,132 @@ def build_project_presentation_sections(wf2b_structured: dict[str, object], wf3_
     structure_name = _field_value(profil_client.get("nom_structure"))
     legal_form = _field_value(profil_client.get("forme_juridique"))
     activities = _join_field_values(profil_client.get("activites", []))
+    territory_implantation = _field_value(profil_client.get("territoire_implantation"))
+    references = _join_field_values(profil_client.get("historique_references", []))
+    capacities = _join_field_values(profil_client.get("capacites_porteuses", []))
     title = _field_value(donnees_projet.get("titre_projet"))
     project_elements = _join_field_values(donnees_projet.get("elements_detectes", []))
     project_dates = _join_field_values(donnees_projet.get("dates_detectees", []))
     project_amount = _field_value(donnees_projet.get("montant_detecte"))
+    context_needs = _join_field_values(donnees_projet.get("contexte_besoin", []))
+    objectifs = _join_field_values(donnees_projet.get("objectifs", []))
+    actions = _join_field_values(donnees_projet.get("actions_prevues", []))
+    publics = _join_field_values(donnees_projet.get("publics_cibles", []))
+    territoire = _join_field_values(donnees_projet.get("territoire_concerne", []))
+    partnerships = _join_field_values(donnees_projet.get("partenariats", []))
+    moyens = _join_field_values(donnees_projet.get("moyens_humains_techniques", []))
+    livrables = _join_field_values(donnees_projet.get("livrables_prevus", []))
+    cofinancements = _join_field_values(donnees_projet.get("cofinancements", []))
+
+    pieces_justificatifs = [
+        str(item.get("libelle", "")).strip()
+        for item in wf3_analysis.get("resultats_criteres", [])
+        if "piece" in str(item.get("libelle", "")).lower() or "annexe" in str(item.get("libelle", "")).lower()
+    ]
+
+    resume_lines = [
+        f"Le projet **{title}** est porte par **{structure_name}**, {legal_form},"
+        + (f" implantee sur **{territory_implantation}**." if territory_implantation != "A completer" else "."),
+    ]
+    if context_needs != "A completer":
+        resume_lines.append(
+            f"Il repond a un besoin ou contexte identifie : {context_needs}."
+        )
+    if objectifs != "A completer":
+        resume_lines.append(
+            f"Les objectifs actuellement documentes sont les suivants : {objectifs}."
+        )
+    if actions != "A completer":
+        resume_lines.append(
+            f"Les actions prevues a ce stade comprennent : {actions}."
+        )
+    if publics != "A completer" or territoire != "A completer":
+        resume_lines.append(
+            f"Le projet vise prioritairement {publics if publics != 'A completer' else 'A_COMPLETER'}"
+            f" sur le territoire {territoire if territoire != 'A completer' else 'A_COMPLETER'}."
+        )
+    if project_amount != "A completer":
+        resume_lines.append(
+            f"Le budget actuellement repere autour de **{project_amount}** devra etre confirme et ventile selon la trame attendue."
+        )
+    if missing_actions:
+        resume_lines.append(
+            "Plusieurs points restent a consolider avant depot : " + " | ".join(missing_actions[:4]) + "."
+        )
 
     sections = [
         {
             "section": "1. Resume du projet",
             "statut": "partiel" if title != "A completer" else "a_completer",
-            "contenu": (
-                f"Projet : {title}\n"
-                f"Resume initial : {wf3_analysis.get('resume_executif', 'A completer')}\n"
-                "A retravailler dans la forme attendue par l'appel a projet."
-            ),
+            "contenu": "\n\n".join(resume_lines),
         },
         {
             "section": "2. Presentation de la structure porteuse",
             "statut": "partiel" if structure_name != "A completer" else "a_completer",
             "contenu": (
-                f"Structure : {structure_name}\n"
-                f"Forme juridique : {legal_form}\n"
-                f"Activites / experience : {activities}\n"
-                "Completer avec l'historique, les references et la capacite a porter le projet."
+                f"La structure porteuse identifiee est **{structure_name}**, de forme juridique **{legal_form}**.\n\n"
+                f"Ses activites ou champs d'intervention documentes sont : {activities}.\n\n"
+                f"Ses references ou experiences disponibles a ce stade sont : {references if references != 'A completer' else 'A_COMPLETER'}.\n\n"
+                f"Les capacites de portage, humaines ou techniques, actuellement reperees sont : {capacities if capacities != 'A completer' else 'A_COMPLETER'}.\n\n"
+                "Cette section devra etre completee avec des elements de credibilite : anciennete, projets similaires, equipe, equipements, partenariats structurels et capacite de gestion."
             ),
         },
         {
-            "section": "3. Description detaillee du projet",
-            "statut": "partiel" if project_elements != "A completer" else "a_completer",
+            "section": "3. Contexte, besoin et description detaillee du projet",
+            "statut": "partiel" if project_elements != "A completer" or context_needs != "A completer" else "a_completer",
             "contenu": (
-                f"Titre / intitule : {title}\n"
-                f"Elements detectes : {project_elements}\n"
-                "A transformer en texte redige : contexte, besoin, objectifs, actions prevues, livrables."
+                f"Le projet **{title}** s'inscrit dans le contexte suivant : {context_needs if context_needs != 'A completer' else 'A_COMPLETER'}.\n\n"
+                f"Les elements deja reperes dans la documentation projet sont : {project_elements if project_elements != 'A completer' else 'A_COMPLETER'}.\n\n"
+                f"Les objectifs explicitement identifies sont : {objectifs if objectifs != 'A completer' else 'A_COMPLETER'}.\n\n"
+                "Cette partie doit decrire de maniere narrative le probleme traite, la reponse proposee, la logique d'intervention et la valeur du projet par rapport aux attendus du financeur."
             ),
         },
         {
             "section": "4. Publics, territoire et beneficiaires",
-            "statut": "a_completer",
+            "statut": "partiel" if publics != "A completer" or territoire != "A completer" else "a_completer",
             "contenu": (
-                "Preciser les publics vises, le territoire concerne, le nombre de beneficiaires et l'impact attendu. "
-                "Cette section doit reprendre les attendus explicites de l'appel a projet."
+                f"Les publics cibles identifies a ce stade sont : {publics if publics != 'A completer' else 'A_COMPLETER'}.\n\n"
+                f"Le territoire ou perimetre d'intervention documente est : {territoire if territoire != 'A completer' else 'A_COMPLETER'}.\n\n"
+                "Il faut encore preciser le volume de beneficiaires attendus, les modalites de selection ou mobilisation des publics et l'impact territorial concret du projet."
             ),
         },
         {
             "section": "5. Methodologie, calendrier et mise en oeuvre",
-            "statut": "partiel" if requirements["planning_required"] or project_dates != "A completer" else "a_completer",
+            "statut": "partiel" if requirements["planning_required"] or project_dates != "A completer" or actions != "A completer" else "a_completer",
             "contenu": (
-                f"Dates / jalons detectes : {project_dates}\n"
-                "A structurer en phasage : preparation, mise en oeuvre, suivi, evaluation, livrables."
+                f"Les dates, periodes ou jalons actuellement detectes sont : {project_dates if project_dates != 'A completer' else 'A_COMPLETER'}.\n\n"
+                f"Les actions ou etapes prevues sont : {actions if actions != 'A completer' else 'A_COMPLETER'}.\n\n"
+                "La methode devra ensuite etre ordonnee en phases claires : preparation, mobilisation, mise en oeuvre, diffusion, suivi et evaluation, avec une articulation precise entre calendrier et actions."
             ),
         },
         {
             "section": "6. Moyens mobilises et partenariats",
-            "statut": "a_completer",
+            "statut": "partiel" if moyens != "A completer" or partnerships != "A completer" else "a_completer",
             "contenu": (
-                "Decrire les moyens humains, techniques, eventuels prestataires et partenariats. "
-                "Verifier les pieces exigees et les criteres techniques de l'appel."
+                f"Les moyens humains ou techniques reperes sont : {moyens if moyens != 'A completer' else 'A_COMPLETER'}.\n\n"
+                f"Les partenariats, appuis institutionnels ou relais identifies sont : {partnerships if partnerships != 'A_COMPLETER' else 'A_COMPLETER'}.\n\n"
+                "Cette section devra preciser qui fait quoi, avec quels moyens, quels appuis, et comment ces ressources garantissent la faisabilite du projet."
             ),
         },
         {
-            "section": "7. Budget et plan de financement",
-            "statut": "partiel" if requirements["budget_required"] or project_amount != "A completer" else "a_completer",
+            "section": "7. Livrables, budget et plan de financement",
+            "statut": "partiel" if requirements["budget_required"] or project_amount != "A completer" or livrables != "A completer" else "a_completer",
             "contenu": (
-                f"Montant detecte : {project_amount}\n"
-                "Le budget doit etre ventile en charges et produits, conforme a la trame demandee."
+                f"Les livrables ou resultats attendus identifies sont : {livrables if livrables != 'A completer' else 'A_COMPLETER'}.\n\n"
+                f"Le montant actuellement repere est : {project_amount if project_amount != 'A completer' else 'A_COMPLETER'}.\n\n"
+                f"Les informations de cofinancement ou d'autofinancement disponibles sont : {cofinancements if cofinancements != 'A completer' else 'A_COMPLETER'}.\n\n"
+                "Le budget detaille devra etre ventile en charges et produits, verifie en equilibre, et aligne sur les exigences explicites de l'appel a projet."
             ),
         },
         {
             "section": "8. Pieces et points a completer",
-            "statut": "a_completer" if missing_actions else "partiel",
-            "contenu": " | ".join(missing_actions[:8]) if missing_actions else "Verifier les annexes et justificatifs demandes dans l'appel.",
+            "statut": "a_completer" if missing_actions or pieces_justificatifs else "partiel",
+            "contenu": (
+                "Points d'attention identifies : "
+                + (" | ".join(missing_actions[:8]) if missing_actions else "Aucun point critique remonte.")
+                + "\n\nPieces et justificatifs a verifier : "
+                + (" | ".join(pieces_justificatifs[:8]) if pieces_justificatifs else "A_PRECISER")
+            ),
         },
     ]
     return sections
@@ -338,22 +400,25 @@ def build_project_presentation_markdown(sections: list[dict[str, str]]) -> str:
 def build_project_budget_template(wf2b_structured: dict[str, object], wf3_analysis: dict[str, object]) -> dict[str, Any]:
     donnees_projet = wf2b_structured.get("donnees_projet", {})
     amount = _field_value(donnees_projet.get("montant_detecte"))
+    cofinancements = _join_field_values(donnees_projet.get("cofinancements", []), default="")
+    actions = _join_field_values(donnees_projet.get("actions_prevues", []), default="")
+    moyens = _join_field_values(donnees_projet.get("moyens_humains_techniques", []), default="")
     requirements = _infer_call_requirements(wf3_analysis)
 
     charges = [
-        {"poste": "Charges de personnel affectees au projet", "montant_previsionnel": "", "commentaire": "A completer"},
-        {"poste": "Prestations externes / intervenants", "montant_previsionnel": "", "commentaire": "A completer"},
-        {"poste": "Communication / diffusion", "montant_previsionnel": "", "commentaire": "A completer"},
-        {"poste": "Deplacements / missions", "montant_previsionnel": "", "commentaire": "A completer"},
-        {"poste": "Location / materiel / technique", "montant_previsionnel": "", "commentaire": "A completer"},
+        {"poste": "Ressources humaines affectees au projet", "montant_previsionnel": "", "commentaire": moyens or "A completer"},
+        {"poste": "Prestations externes / intervenants", "montant_previsionnel": "", "commentaire": actions or "A completer"},
+        {"poste": "Materiel et equipements techniques", "montant_previsionnel": "", "commentaire": moyens or "A completer"},
+        {"poste": "Communication, diffusion et valorisation", "montant_previsionnel": "", "commentaire": "A completer"},
+        {"poste": "Deplacements, missions et logistique", "montant_previsionnel": "", "commentaire": "A completer"},
+        {"poste": "Evaluation, suivi et coordination", "montant_previsionnel": "", "commentaire": "A completer"},
         {"poste": "Frais administratifs lies au projet", "montant_previsionnel": "", "commentaire": "A completer"},
-        {"poste": "Autres charges du projet", "montant_previsionnel": "", "commentaire": "A completer"},
     ]
     produits = [
         {"poste": "Subvention sollicitee", "montant_previsionnel": amount if amount != "A completer" else "", "commentaire": "Verifier si ce montant correspond bien a l'aide demandee"},
-        {"poste": "Autofinancement", "montant_previsionnel": "", "commentaire": "A completer"},
-        {"poste": "Autres subventions publiques", "montant_previsionnel": "", "commentaire": "A completer"},
-        {"poste": "Partenariats / financements prives", "montant_previsionnel": "", "commentaire": "A completer"},
+        {"poste": "Autofinancement", "montant_previsionnel": "", "commentaire": cofinancements or "A completer"},
+        {"poste": "Autres subventions publiques", "montant_previsionnel": "", "commentaire": cofinancements or "A completer"},
+        {"poste": "Partenariats / financements prives", "montant_previsionnel": "", "commentaire": cofinancements or "A completer"},
         {"poste": "Recettes propres du projet", "montant_previsionnel": "", "commentaire": "A completer"},
         {"poste": "Autres produits", "montant_previsionnel": "", "commentaire": "A completer"},
     ]
