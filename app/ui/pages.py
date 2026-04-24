@@ -827,6 +827,84 @@ def render_wf4_section(
         st.info("Aucune suggestion alternative locale n'a ete detectee pour l'instant.")
 
 
+def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
+    execution = pipeline_outputs.get("execution", {})
+    wf3 = pipeline_outputs.get("wf3", {})
+    wf4 = pipeline_outputs.get("wf4", {})
+    rapport = wf4.get("rapport_structured", {})
+    preremplissage = list(wf4.get("champs_preremplissage", []))
+    suggestions = list(wf4.get("suggestions", []))
+    report_markdown = str(wf4.get("rapport_markdown", ""))
+
+    st.markdown("## Resultat final")
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Statut", str(wf3.get("statut_eligibilite", "a confirmer")))
+    col2.metric("Score", f"{wf3.get('score_global', 0)}/100")
+    col3.metric("Provider", str(execution.get("llm_selection", {}).get("provider", "local") or "local"))
+    col4.metric("Modele", str(execution.get("llm_selection", {}).get("model", "heuristique") or "heuristique"))
+
+    st.markdown("### Resume executif")
+    st.write(str(rapport.get("resume_executif", wf3.get("resume_executif", "Aucun resume disponible."))))
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("### Points forts")
+        points_valides = rapport.get("points_valides", [])
+        if points_valides:
+            for item in points_valides[:5]:
+                st.write(f"- {item}")
+        else:
+            st.write("- Aucun point fort clairement valide")
+
+        st.markdown("### Points a confirmer")
+        points_confirm = rapport.get("points_a_confirmer", [])
+        if points_confirm:
+            for item in points_confirm[:5]:
+                st.write(f"- {item}")
+        else:
+            st.write("- Aucun point intermediaire majeur")
+
+    with col_b:
+        st.markdown("### Points bloquants")
+        points_bloquants = rapport.get("points_bloquants", [])
+        if points_bloquants:
+            for item in points_bloquants[:5]:
+                st.write(f"- {item}")
+        else:
+            st.write("- Aucun blocage majeur detecte")
+
+        st.markdown("### Actions prioritaires")
+        recommandations = rapport.get("recommandations", [])
+        if recommandations:
+            for item in recommandations[:5]:
+                st.write(f"- {item}")
+        else:
+            st.write("- Aucune action urgente")
+
+    st.markdown("### Sorties WF4")
+    out1, out2, out3 = st.columns(3)
+    out1.metric("Champs pre-remplis", str(len(preremplissage)))
+    out2.metric("Suggestions", str(len(suggestions)))
+    out3.metric("Confiance", str(wf3.get("niveau_confiance", "moyen")))
+
+    dl1, dl2 = st.columns(2)
+    dl1.download_button(
+        "Telecharger le rapport markdown",
+        data=report_markdown,
+        file_name="rapport_final.md",
+        mime="text/markdown",
+        key="download_final_markdown",
+    )
+    dl2.download_button(
+        "Telecharger la sortie JSON",
+        data=json.dumps(pipeline_outputs, ensure_ascii=False, indent=2),
+        file_name="resultat_pipeline.json",
+        mime="application/json",
+        key="download_final_json",
+    )
+
+
 # ── Global summary sections ───────────────────────────────────────────────────
 
 def render_global_summary(summary_map: dict[str, list[dict[str, str]]]) -> None:
@@ -1356,6 +1434,8 @@ def render_upload() -> None:
                 )
             else:
                 st.warning(f"Persistance Supabase non finalisee : {persistence_result.get('error', 'erreur inconnue')}")
+        st.divider()
+        render_final_result_summary(active_pipeline_outputs)
     else:
         st.info("Aucune execution pilotee en memoire pour les fichiers actuels. Les vues ci-dessous utilisent les sorties locales par defaut.")
 
