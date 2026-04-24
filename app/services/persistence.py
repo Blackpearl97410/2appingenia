@@ -42,6 +42,40 @@ def _map_analysis_status(value: str) -> str:
     return mapping.get(value, "a_confirmer")
 
 
+def _normalize_type_financement(raw: str) -> str:
+    """Normalise une valeur brute extraite vers les valeurs acceptées par le CHECK PostgreSQL."""
+    VALID = {"marche_public", "subvention", "aap", "ami", "autre"}
+    if not raw:
+        return "autre"
+    cleaned = raw.lower().strip()
+    # correspondances directes
+    if cleaned in VALID:
+        return cleaned
+    # correspondances par mots-clés
+    if any(k in cleaned for k in ("marche", "marché", "public", "ao ", "appel d'offres")):
+        return "marche_public"
+    if any(k in cleaned for k in ("subvention", "aide", "grant")):
+        return "subvention"
+    if any(k in cleaned for k in ("aap", "appel à projet", "appel a projet")):
+        return "aap"
+    if any(k in cleaned for k in ("ami", "appel à manifestation", "appel a manifestation")):
+        return "ami"
+    return "autre"
+
+
+def _normalize_niveau_confiance(raw: str) -> str:
+    """Normalise vers haut/moyen/bas."""
+    VALID = {"haut", "moyen", "bas"}
+    cleaned = (raw or "").lower().strip()
+    if cleaned in VALID:
+        return cleaned
+    if cleaned in ("high", "eleve", "élevé", "fort"):
+        return "haut"
+    if cleaned in ("low", "faible"):
+        return "bas"
+    return "moyen"
+
+
 def _map_result_status(value: str) -> str:
     mapping = {
         "valide": "valide",
@@ -102,6 +136,13 @@ def persist_pipeline_outputs(
     if client is None:
         return {"ok": False, "error": "client_supabase_non_configure"}
 
+    try:
+        return _persist_pipeline_outputs_inner(client, settings, dossier_files, client_files, project_files, pipeline_outputs)
+    except Exception as exc:
+        return {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
+
+
+def _persist_pipeline_outputs_inner(client, settings, dossier_files, client_files, project_files, pipeline_outputs):
     wf2a = pipeline_outputs["wf2a"]
     wf2b = pipeline_outputs["wf2b"]
     wf3 = pipeline_outputs["wf3"]
@@ -136,7 +177,9 @@ def persist_pipeline_outputs(
     dossier_payload = {
         "titre": dossier_title,
         "reference": None,
-        "type_financement": _sanitize_text(wf2a_metadata.get("type_dossier_detecte", "autre")) or "autre",
+        "type_financement": _normalize_type_financement(
+            _sanitize_text(wf2a_metadata.get("type_dossier_detecte", ""))
+        ),
         "financeur": _sanitize_text(wf2a_metadata.get("financeur_detecte", "")) or None,
         "client_id": client_row["id"],
         "montant_max": _extract_first_numeric(_sanitize_text(wf2a_metadata.get("montant_max_detecte", ""))),
@@ -167,19 +210,22 @@ def persist_pipeline_outputs(
 
     inserted_criteres = []
     criterion_id_map: dict[str, str] = {}
+    VALID_CATEGORIES = {"obligatoire", "souhaitable", "bloquant", "interpretatif"}
     for index, criterion in enumerate(wf2a.get("criteres", []), start=1):
+        raw_cat = _sanitize_text(criterion.get("categorie", "")).lower()
+        categorie = raw_cat if raw_cat in VALID_CATEGORIES else "interpretatif"
         row = {
             "dossier_id": dossier_row["id"],
-            "categorie": _sanitize_text(criterion.get("categorie")),
+            "categorie": categorie,
             "domaine": _sanitize_text(criterion.get("domaine")),
             "libelle": _sanitize_text(criterion.get("libelle")),
             "detail": _sanitize_text(criterion.get("detail")),
             "source_document_id": document_map.get(str(criterion.get("source_document", ""))),
             "source_texte": _sanitize_text(criterion.get("source_texte")),
-            "est_piece_exigee": criterion.get("est_piece_exigee", False),
-            "est_critere_eliminatoire": criterion.get("est_critere_eliminatoire", False),
-            "niveau_confiance": criterion.get("niveau_confiance", "moyen"),
-            "necessite_validation": criterion.get("necessite_validation", False),
+            "est_piece_exigee": bool(criterion.get("est_piece_exigee", False)),
+            "est_critere_eliminatoire": bool(criterion.get("est_critere_eliminatoire", False)),
+            "niveau_confiance": _normalize_niveau_confiance(str(criterion.get("niveau_confiance", ""))),
+            "necessite_validation": bool(criterion.get("necessite_validation", False)),
             "ordre": index,
         }
         inserted = client.table("criteres").insert(row).execute().data[0]
@@ -193,7 +239,7 @@ def persist_pipeline_outputs(
             "client_id": client_row["id"],
             "score_global": int(wf3.get("score_global", 0) or 0),
             "statut_eligibilite": _map_analysis_status(str(wf3.get("statut_eligibilite", "a confirmer"))),
-            "niveau_confiance": wf3.get("niveau_confiance", "moyen"),
+            "niveau_confiance": _normalize_niveau_confiance(str(wf3.get("niveau_confiance", ""))),
             "sous_scores": wf3.get("sous_scores", {}),
             "resume_executif": _sanitize_text(wf3.get("resume_executif", "")),
             "points_forts": [_sanitize_text(item) for item in list(rapport.get("points_valides", []))],
