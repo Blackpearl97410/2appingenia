@@ -1,0 +1,227 @@
+{
+  "documents": {
+    "dossier": [
+      "FOM Présence digitale 25 volet 1.xlsx",
+      "region-reunion.fonds-de-soutien-a-l-audiovisuel-au-cinema-et-au-multimedia.pdf",
+      "cadre_intervention_2025.pdf"
+    ],
+    "client": [
+      "plaquette_formation_audio.pdf",
+      "PRE-6.3 V01 Maj 23juillet2024 Charte du formateur externe Doc de diffusion paviel signé.pdf"
+    ],
+    "projet": [
+      "formulaire_de_demande_-pre-poc_v2.docx",
+      "Phono-Production-phonographique-2026.xlsx"
+    ]
+  },
+  "wf2a": {
+    "nb_criteres": 9,
+    "metadata": {
+      "type_dossier_detecte": "subvention",
+      "financeur_detecte": "CNM",
+      "montant_max_detecte": "100 euros",
+      "date_limite_detectee": "2025-01-01",
+      "nb_criteres_extraits": 9,
+      "mode_extraction": "heuristique_preparee_pour_llm",
+      "documents_sources": [
+        "FOM Présence digitale 25 volet 1.xlsx",
+        "region-reunion.fonds-de-soutien-a-l-audiovisuel-au-cinema-et-au-multimedia.pdf",
+        "cadre_intervention_2025.pdf"
+      ]
+    }
+  },
+  "wf2b": {
+    "profil_client": {
+      "forme_juridique": {
+        "field_name": "forme_juridique",
+        "value": "ei",
+        "source_document": "plaquette_formation_audio.pdf",
+        "source_texte": "FORMATION AUDIO PROFESSIONNELLE @Lemagicien_97k · LaBlackBox Studio · La Réunion Maîtrisez la chaîne audio — de la captation au master MODULE 01 \u0000 L'ART DE LA PRISE DE SON Capturer l'émotion sans compromis technique — le",
+        "niveau_confiance": "haut",
+        "necessite_validation": false,
+        "mode_extraction": "heuristique_preparee_pour_llm"
+      },
+      "siret": {
+        "field_name": "siret",
+        "value": "Non detecte",
+        "source_document": "plaquette_formation_audio.pdf",
+        "source_texte": "",
+        "niveau_confiance": "bas",
+        "necessite_validation": true,
+        "mode_extraction": "heuristique_preparee_pour_llm"
+      },
+      "email": {
+        "field_name": "email",
+        "value": "contact@labelackboxstudio.re",
+        "source_document": "plaquette_formation_audio.pdf",
+        "source_texte": "HT groupe & intra sur devis Formation certifiée · Titre FPA · Collège de Paris contact@labelackboxstudio.re · @Lemagicien_97k · · ·",
+        "niveau_confiance": "haut",
+        "necessite_validation": false,
+        "mode_extraction": "heuristique_preparee_pour_llm"
+      },
+      "telephone": {
+        "field_name": "telephone",
+        "value": "Non detecte",
+        "source_document": "plaquette_formation_audio.pdf",
+        "source_texte": "",
+        "niveau_confiance": "bas",
+        "necessite_validation": true,
+        "mode_extraction": "heuristique_preparee_pour_llm"
+      },
+      "activites": [
+        {
+          "field_name": "activite",
+          "value": "formation",
+          "source_document": "plaquette_formation_audio.pdf",
+          "source_texte": "FORMATION AUDIO PROFESSIONNELLE @Lemagicien_97k · LaBlackBox Studio · La Réunion Maîtrisez la chaîne audio — de la captation au master MODULE 01 \u0000 L'",
+          "niveau_confiance": "moyen",
+          "necessite_validation": false,
+          "mode_extraction": "heuristique_preparee_pour_llm"
+        },
+        {
+          "field_name": "activite",
+          "value": "studio",
+          "source_document": "plaquette_formation_audio.pdf",
+          "source_texte": "FORMATION AUDIO PROFESSIONNELLE @Lemagicien_97k · LaBlackBox Studio · La Réunion Maîtrisez la chaîne audio — de la captation au master MODULE 01 \u0000 L'ART DE LA PRISE DE SON Capturer l'émotion sans compromis t",
+          "niveau_confiance": "moyen",
+          "necessite_validation": false,
+          "mode_extraction": "heuristique_preparee_pour_llm"
+        }
+      ],
+      "nom_structure": {
+        "field_name": "nom_structure",
+        "value": "FORMATION AUDIO PROFESSIONNELLE",
+        "source_document": "plaquette_formation_audio.pdf",
+        "source_texte": "FORMATION AUDIO PROFESSIONNELLE @Lemagicien_97k · LaBlackBox Studio · La Réunion Maîtrisez la chaîne audio — de la captation au master MODULE 01 \u0000 L'ART DE LA PRISE DE SON",
+        "niveau_confiance": "moyen",
+        "necessite_validation": false,
+        "mode_extraction": "heuristique_preparee_pour_llm"
+      }
+    },
+    "donnees_projet": {
+      "titre_projet": {
+        "field_name": "titre_projet",
+        "value": "FORMULAIRE DE DEMANDE D’AIDE",
+        "source_document": "formulaire_de_demande_-pre-poc_v2.docx",
+        "source_texte": "FORMULAIRE DE DEMANDE D’AIDE AU FINANCEMENT DE LA PREUVE DE CONCEPT « Pré POC » Ce dossier demande ainsi que les pièces à joindre permettront au service instructeur de",
+        "niveau_confiance": "moyen",
+        "necessite_validation": false,
+        "mode_extraction": "heuristique_preparee_pour_llm"
+      },
+      "montant_detecte": {
+        "field_name": "montant_detecte",
+        "value": "Non detecte",
+        "source_document": "formulaire_de_demande_-pre-poc_v2.docx",
+        "source_texte": "",
+        "niveau_confiance": "bas",
+        "necessite_validation": true,
+        "mode_extraction": "heuristique_preparee_pour_llm"
+      },
+      "dates_detectees": [
+        {
+          "field_name": "date_projet",
+          "value": "2020-12-01",
+          "source_document": "formulaire_de_demande_-pre-poc_v2.docx",
+          "source_texte": "FORMULAIRE DE DEMANDE D’AIDE AU FINANCEMENT DE LA PREUVE DE CONCEPT « Pré POC » Ce dossier demande ainsi que les pièces à joindre permettront au service instructeur de caractériser l’éligibilité du projet au dispositif e",
+          "niveau_confiance": "moyen",
+          "necessite_validation": false,
+          "mode_extraction": "heuristique_preparee_pour_llm"
+        },
+        {
+          "field_name": "date_projet",
+          "value": "2021-12-31",
+          "source_document": "formulaire_de_demande_-pre-poc_v2.docx",
+          "source_texte": "FORMULAIRE DE DEMANDE D’AIDE AU FINANCEMENT DE LA PREUVE DE CONCEPT « Pré POC » Ce dossier demande ainsi que les pièces à joindre permettront au service instructeur de caractériser l’éligibilité du projet au dispositif e",
+          "niveau_confiance": "moyen",
+          "necessite_validation": false,
+          "mode_extraction": "heuristique_preparee_pour_llm"
+        }
+      ],
+      "elements_detectes": [
+        {
+          "field_name": "element_projet",
+          "value": "public",
+          "source_document": "formulaire_de_demande_-pre-poc_v2.docx",
+          "source_texte": "FORMULAIRE DE DEMANDE D’AIDE AU FINANCEMENT DE LA PREUVE DE CONCEPT « Pré POC » Ce dossier demande ainsi que les pièces à joindre permettront au service instructeur de caractériser l’éligibilité du projet au dispositif e",
+          "niveau_confiance": "moyen",
+          "necessite_validation": false,
+          "mode_extraction": "heuristique_preparee_pour_llm"
+        },
+        {
+          "field_name": "element_projet",
+          "value": "budget",
+          "source_document": "formulaire_de_demande_-pre-poc_v2.docx",
+          "source_texte": "FORMULAIRE DE DEMANDE D’AIDE AU FINANCEMENT DE LA PREUVE DE CONCEPT « Pré POC » Ce dossier demande ainsi que les pièces à joindre permettront au service instructeur de caractériser l’éligibilité du projet au dispositif e",
+          "niveau_confiance": "moyen",
+          "necessite_validation": false,
+          "mode_extraction": "heuristique_preparee_pour_llm"
+        },
+        {
+          "field_name": "element_projet",
+          "value": "financement",
+          "source_document": "formulaire_de_demande_-pre-poc_v2.docx",
+          "source_texte": "FORMULAIRE DE DEMANDE D’AIDE AU FINANCEMENT DE LA PREUVE DE CONCEPT « Pré POC » Ce dossier demande ainsi que les pièces à joindre permettront au service instructeur de caractériser l’",
+          "niveau_confiance": "moyen",
+          "necessite_validation": false,
+          "mode_extraction": "heuristique_preparee_pour_llm"
+        }
+      ]
+    }
+  },
+  "bridge": {
+    "type_structure_requise": "A verifier",
+    "date_limite_dossier": "2025-01-01",
+    "montant_dossier": "100 euros",
+    "conditions_dossier": "Date de reference detectee | Piece demandee detectee | Date de reference detectee | Element de candidature detecte",
+    "type_structure_client": "ei",
+    "identite_client": "formation, studio",
+    "montant_projet": "Non detecte",
+    "dates_projet": "2020-12-01, 2021-12-31",
+    "elements_projet": "public, budget, financement"
+  },
+  "wf3": {
+    "statut_eligibilite": "a confirmer",
+    "score_global": 68,
+    "niveau_confiance": "moyen",
+    "counts": {
+      "valide": 4,
+      "a_confirmer": 2,
+      "manquant": 3,
+      "non_valide": 0
+    },
+    "resume_executif": "Score global 68/100. Statut a confirmer. 4 critere(s) valides, 2 a confirmer, 3 manquant(s), 0 non valide(s)."
+  },
+  "wf4": {
+    "rapport_structured": {
+      "type_rapport": "complet",
+      "format_export": "markdown",
+      "resume_executif": "Score global 68/100. Statut a confirmer. 4 critere(s) valides, 2 a confirmer, 3 manquant(s), 0 non valide(s).",
+      "statut_eligibilite": "a confirmer",
+      "score_global": 68,
+      "niveau_confiance": "moyen",
+      "points_valides": [
+        "Date de reference detectee",
+        "Element de planning detecte",
+        "Date de reference detectee",
+        "Element de calendrier detecte"
+      ],
+      "points_a_confirmer": [
+        "Piece demandee detectee",
+        "Element de candidature detecte"
+      ],
+      "points_bloquants": [
+        "Element budgetaire detecte",
+        "Element budgetaire detecte",
+        "Montant detecte dans le dossier"
+      ],
+      "pieces_manquantes": [],
+      "recommandations": [
+        "Ajouter un budget ou un plan de financement.",
+        "Ajouter un budget ou un plan de financement.",
+        "Ajouter un budget ou un plan de financement."
+      ]
+    },
+    "prefill_count": 9,
+    "suggestions_count": 4
+  }
+}
