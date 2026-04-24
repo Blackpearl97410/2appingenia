@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.llm_client import call_anthropic_message, parse_json_response
+from app.services.llm_client import call_llm_message, parse_json_response
 from app.services.wf2 import VALID_CONFIDENCE, extract_document_payloads
 
 
@@ -73,7 +73,7 @@ def _format_payloads(title: str, uploaded_files) -> str:
     payloads = extract_document_payloads(uploaded_files)
     blocks = []
     for payload in payloads:
-        text = payload["text"].strip()[:60000]
+        text = payload["text"].strip()[:15000]
         if not text:
             continue
         blocks.append(f"===== {title} | DOCUMENT: {payload['document_name']} =====\n{text}")
@@ -89,9 +89,20 @@ def build_wf2b_user_prompt(client_files, project_files) -> str:
     ).strip()
 
 
-def request_wf2b_llm_payload(client_files, project_files) -> dict[str, object]:
+def request_wf2b_llm_payload(
+    client_files,
+    project_files,
+    provider_override: str | None = None,
+    model_override: str | None = None,
+) -> dict[str, object]:
     user_prompt = build_wf2b_user_prompt(client_files, project_files)
-    llm_result = call_anthropic_message(WF2B_SYSTEM_PROMPT, user_prompt, max_tokens=4000)
+    llm_result = call_llm_message(
+        WF2B_SYSTEM_PROMPT,
+        user_prompt,
+        max_tokens=4000,
+        provider_override=provider_override,
+        model_override=model_override,
+    )
 
     if not llm_result.get("ok"):
         return {
@@ -110,5 +121,6 @@ def request_wf2b_llm_payload(client_files, project_files) -> dict[str, object]:
         "payload": parsed_payload,
         "usage": llm_result.get("usage", {}),
         "raw_text": llm_result.get("text", ""),
+        "provider": llm_result.get("provider", ""),
         "model": llm_result.get("model", ""),
     }

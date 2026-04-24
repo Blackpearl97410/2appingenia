@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.llm_client import call_anthropic_message, parse_json_response
+from app.services.llm_client import call_llm_message, parse_json_response
 from app.services.wf2 import VALID_CATEGORIES, VALID_CONFIDENCE, VALID_DOMAINS, extract_document_payloads
 
 
@@ -11,7 +11,7 @@ Ta mission est d'extraire les criteres d'un dossier de financement sous forme de
 Regles :
 - ne deduis pas ce qui n'est pas explicite
 - cite toujours le document source et un extrait de texte
-- retourne entre 5 et 30 criteres si possible
+- retourne entre 5 et 15 criteres au maximum
 - privilegie les criteres bloquants et obligatoires
 - utilise uniquement ces categories : {", ".join(sorted(VALID_CATEGORIES))}
 - utilise uniquement ces domaines : {", ".join(sorted(VALID_DOMAINS))}
@@ -49,7 +49,7 @@ def build_wf2a_user_prompt(dossier_files) -> str:
     payloads = extract_document_payloads(dossier_files)
     document_blocks = []
     for payload in payloads:
-        text = payload["text"].strip()[:80000]
+        text = payload["text"].strip()[:20000]
         if not text:
             continue
         document_blocks.append(
@@ -62,9 +62,19 @@ def build_wf2a_user_prompt(dossier_files) -> str:
     )
 
 
-def request_wf2a_llm_payload(dossier_files) -> dict[str, object]:
+def request_wf2a_llm_payload(
+    dossier_files,
+    provider_override: str | None = None,
+    model_override: str | None = None,
+) -> dict[str, object]:
     user_prompt = build_wf2a_user_prompt(dossier_files)
-    llm_result = call_anthropic_message(WF2A_SYSTEM_PROMPT, user_prompt, max_tokens=6000)
+    llm_result = call_llm_message(
+        WF2A_SYSTEM_PROMPT,
+        user_prompt,
+        max_tokens=8000,
+        provider_override=provider_override,
+        model_override=model_override,
+    )
 
     if not llm_result.get("ok"):
         return {
@@ -83,5 +93,6 @@ def request_wf2a_llm_payload(dossier_files) -> dict[str, object]:
         "payload": parsed_payload,
         "usage": llm_result.get("usage", {}),
         "raw_text": llm_result.get("text", ""),
+        "provider": llm_result.get("provider", ""),
         "model": llm_result.get("model", ""),
     }

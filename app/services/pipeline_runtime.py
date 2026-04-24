@@ -180,13 +180,22 @@ def normalize_wf3_llm_payload(payload: dict[str, object], fallback: dict[str, ob
     }
 
 
-def resolve_wf2a_structured(dossier_files, prefer_llm: bool = True) -> tuple[dict[str, object], dict[str, object]]:
+def resolve_wf2a_structured(
+    dossier_files,
+    prefer_llm: bool = True,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+) -> tuple[dict[str, object], dict[str, object]]:
     fallback = extract_wf2a_structured(dossier_files)
     meta = {"engine": "heuristique_locale", "fallback_used": False}
     if not prefer_llm or not dossier_files:
         return fallback, meta
 
-    llm_result = request_wf2a_llm_payload(dossier_files)
+    llm_result = request_wf2a_llm_payload(
+        dossier_files,
+        provider_override=llm_provider,
+        model_override=llm_model,
+    )
     if not llm_result.get("ok") or not isinstance(llm_result.get("payload"), dict):
         meta.update({"fallback_used": True, "llm_error": llm_result.get("error", "llm_error")})
         return fallback, meta
@@ -195,19 +204,31 @@ def resolve_wf2a_structured(dossier_files, prefer_llm: bool = True) -> tuple[dic
     meta.update({
         "engine": "llm_direct_python",
         "model": llm_result.get("model", ""),
+        "provider": llm_result.get("provider", ""),
         "usage": llm_result.get("usage", {}),
         "fallback_used": False,
     })
     return structured, meta
 
 
-def resolve_wf2b_structured(client_files, project_files, prefer_llm: bool = True) -> tuple[dict[str, object], dict[str, object]]:
+def resolve_wf2b_structured(
+    client_files,
+    project_files,
+    prefer_llm: bool = True,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+) -> tuple[dict[str, object], dict[str, object]]:
     fallback = extract_wf2b_structured(client_files, project_files)
     meta = {"engine": "heuristique_locale", "fallback_used": False}
     if not prefer_llm or (not client_files and not project_files):
         return fallback, meta
 
-    llm_result = request_wf2b_llm_payload(client_files, project_files)
+    llm_result = request_wf2b_llm_payload(
+        client_files,
+        project_files,
+        provider_override=llm_provider,
+        model_override=llm_model,
+    )
     if not llm_result.get("ok") or not isinstance(llm_result.get("payload"), dict):
         meta.update({"fallback_used": True, "llm_error": llm_result.get("error", "llm_error")})
         return fallback, meta
@@ -216,6 +237,7 @@ def resolve_wf2b_structured(client_files, project_files, prefer_llm: bool = True
     meta.update({
         "engine": "llm_direct_python",
         "model": llm_result.get("model", ""),
+        "provider": llm_result.get("provider", ""),
         "usage": llm_result.get("usage", {}),
         "fallback_used": False,
     })
@@ -227,13 +249,21 @@ def resolve_wf3_analysis(
     wf2b_structured: dict[str, object],
     global_context_bridge: dict[str, str] | None = None,
     prefer_llm: bool = True,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
     fallback = build_wf3_analysis(wf2a_structured, wf2b_structured, global_context_bridge)
     meta = {"engine": "heuristique_locale", "fallback_used": False}
     if not prefer_llm:
         return fallback, meta
 
-    llm_result = request_wf3_llm_payload(wf2a_structured, wf2b_structured, global_context_bridge)
+    llm_result = request_wf3_llm_payload(
+        wf2a_structured,
+        wf2b_structured,
+        global_context_bridge,
+        provider_override=llm_provider,
+        model_override=llm_model,
+    )
     if not llm_result.get("ok") or not isinstance(llm_result.get("payload"), dict):
         meta.update({"fallback_used": True, "llm_error": llm_result.get("error", "llm_error")})
         return fallback, meta
@@ -242,6 +272,7 @@ def resolve_wf3_analysis(
     meta.update({
         "engine": "llm_direct_python",
         "model": llm_result.get("model", ""),
+        "provider": llm_result.get("provider", ""),
         "usage": llm_result.get("usage", {}),
         "fallback_used": False,
     })
@@ -255,9 +286,22 @@ def resolve_pipeline_outputs(
     completed_bridge: dict[str, str],
     global_context_bridge: dict[str, str] | None = None,
     prefer_llm: bool = True,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
 ) -> dict[str, object]:
-    wf2a_structured, wf2a_meta = resolve_wf2a_structured(dossier_files, prefer_llm=prefer_llm)
-    wf2b_structured, wf2b_meta = resolve_wf2b_structured(client_files, project_files, prefer_llm=prefer_llm)
+    wf2a_structured, wf2a_meta = resolve_wf2a_structured(
+        dossier_files,
+        prefer_llm=prefer_llm,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+    )
+    wf2b_structured, wf2b_meta = resolve_wf2b_structured(
+        client_files,
+        project_files,
+        prefer_llm=prefer_llm,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+    )
 
     completed_wf2a, completed_wf2b = merge_completed_bridge_into_wf2(
         wf2a_structured,
@@ -269,6 +313,8 @@ def resolve_pipeline_outputs(
         completed_wf2b,
         global_context_bridge=global_context_bridge,
         prefer_llm=prefer_llm,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
     )
     wf4_outputs = build_wf4_outputs(completed_wf2b, wf3_analysis)
 
@@ -279,6 +325,10 @@ def resolve_pipeline_outputs(
         "wf4": wf4_outputs,
         "execution": {
             "prefer_llm": prefer_llm,
+            "llm_selection": {
+                "provider": llm_provider or "",
+                "model": llm_model or "",
+            },
             "wf2a": wf2a_meta,
             "wf2b": wf2b_meta,
             "wf3": wf3_meta,

@@ -12,6 +12,21 @@ DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"
 DEFAULT_MISTRAL_MODEL = "mistral-small-2603"
 VALID_LLM_PROVIDERS = {"anthropic", "google", "mistral"}
+COMMON_LLM_MODELS = {
+    "anthropic": [
+        DEFAULT_ANTHROPIC_MODEL,
+        "claude-3-5-haiku-latest",
+    ],
+    "google": [
+        DEFAULT_GOOGLE_MODEL,
+        "gemini-2.5-pro",
+        "gemma-3-27b-it",
+    ],
+    "mistral": [
+        DEFAULT_MISTRAL_MODEL,
+        "ministral-8b-2410",
+    ],
+}
 
 
 @dataclass
@@ -51,7 +66,23 @@ class LLMSettings:
         return self.anthropic_model
 
 
-def load_llm_settings() -> LLMSettings:
+def get_model_options(provider: str) -> list[str]:
+    return list(COMMON_LLM_MODELS.get(provider, []))
+
+
+def get_configured_providers() -> list[str]:
+    settings = load_llm_settings()
+    providers: list[str] = []
+    if settings.anthropic_api_key:
+        providers.append("anthropic")
+    if settings.google_api_key:
+        providers.append("google")
+    if settings.mistral_api_key:
+        providers.append("mistral")
+    return providers
+
+
+def load_llm_settings(provider_override: str | None = None, model_override: str | None = None) -> LLMSettings:
     max_tokens_raw = get_env_value("ANTHROPIC_MAX_TOKENS", "4000")
     temperature_raw = get_env_value("ANTHROPIC_TEMPERATURE", "0.1")
     provider_raw = get_env_value("LLM_PROVIDER", "").strip().lower()
@@ -70,29 +101,43 @@ def load_llm_settings() -> LLMSettings:
     google_api_key = get_env_value("GOOGLE_API_KEY", "")
     mistral_api_key = get_env_value("MISTRAL_API_KEY", "")
 
-    if provider_raw not in VALID_LLM_PROVIDERS:
+    provider_candidate = (provider_override or provider_raw).strip().lower()
+
+    if provider_candidate not in VALID_LLM_PROVIDERS:
         if google_api_key:
-            provider_raw = "google"
+            provider_candidate = "google"
         elif mistral_api_key:
-            provider_raw = "mistral"
+            provider_candidate = "mistral"
         else:
-            provider_raw = "anthropic"
+            provider_candidate = "anthropic"
+
+    anthropic_model = get_env_value("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MODEL)
+    google_model = get_env_value("GOOGLE_MODEL", DEFAULT_GOOGLE_MODEL)
+    mistral_model = get_env_value("MISTRAL_MODEL", DEFAULT_MISTRAL_MODEL)
+
+    if model_override:
+        if provider_candidate == "google":
+            google_model = model_override.strip()
+        elif provider_candidate == "mistral":
+            mistral_model = model_override.strip()
+        else:
+            anthropic_model = model_override.strip()
 
     return LLMSettings(
-        provider=provider_raw,
+        provider=provider_candidate,
         anthropic_api_key=anthropic_api_key,
         google_api_key=google_api_key,
         mistral_api_key=mistral_api_key,
-        anthropic_model=get_env_value("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MODEL),
-        google_model=get_env_value("GOOGLE_MODEL", DEFAULT_GOOGLE_MODEL),
-        mistral_model=get_env_value("MISTRAL_MODEL", DEFAULT_MISTRAL_MODEL),
+        anthropic_model=anthropic_model,
+        google_model=google_model,
+        mistral_model=mistral_model,
         max_tokens=max_tokens,
         temperature=temperature,
     )
 
 
-def create_llm_client():
-    settings = load_llm_settings()
+def create_llm_client(provider_override: str | None = None, model_override: str | None = None):
+    settings = load_llm_settings(provider_override=provider_override, model_override=model_override)
     if not settings.is_configured:
         return None
 
@@ -144,8 +189,15 @@ def extract_text_from_message(message) -> str:
     return "\n".join(texts).strip()
 
 
-def call_anthropic_message(system_prompt: str, user_prompt: str, *, max_tokens: int | None = None) -> dict[str, object]:
-    settings = load_llm_settings()
+def call_anthropic_message(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    max_tokens: int | None = None,
+    provider_override: str | None = None,
+    model_override: str | None = None,
+) -> dict[str, object]:
+    settings = load_llm_settings(provider_override=provider_override, model_override=model_override)
     if settings.provider != "anthropic":
         return {
             "ok": False,
@@ -155,7 +207,7 @@ def call_anthropic_message(system_prompt: str, user_prompt: str, *, max_tokens: 
             "text": "",
             "usage": {},
         }
-    client = create_llm_client()
+    client = create_llm_client(provider_override=provider_override, model_override=model_override)
     if client is None:
         return {
             "ok": False,
@@ -200,8 +252,15 @@ def call_anthropic_message(system_prompt: str, user_prompt: str, *, max_tokens: 
         }
 
 
-def call_google_message(system_prompt: str, user_prompt: str, *, max_tokens: int | None = None) -> dict[str, object]:
-    settings = load_llm_settings()
+def call_google_message(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    max_tokens: int | None = None,
+    provider_override: str | None = None,
+    model_override: str | None = None,
+) -> dict[str, object]:
+    settings = load_llm_settings(provider_override=provider_override, model_override=model_override)
     if settings.provider != "google":
         return {
             "ok": False,
@@ -211,7 +270,7 @@ def call_google_message(system_prompt: str, user_prompt: str, *, max_tokens: int
             "text": "",
             "usage": {},
         }
-    client = create_llm_client()
+    client = create_llm_client(provider_override=provider_override, model_override=model_override)
     if client is None:
         return {
             "ok": False,
@@ -257,8 +316,15 @@ def call_google_message(system_prompt: str, user_prompt: str, *, max_tokens: int
         }
 
 
-def call_mistral_message(system_prompt: str, user_prompt: str, *, max_tokens: int | None = None) -> dict[str, object]:
-    settings = load_llm_settings()
+def call_mistral_message(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    max_tokens: int | None = None,
+    provider_override: str | None = None,
+    model_override: str | None = None,
+) -> dict[str, object]:
+    settings = load_llm_settings(provider_override=provider_override, model_override=model_override)
     if settings.provider != "mistral":
         return {
             "ok": False,
@@ -268,7 +334,7 @@ def call_mistral_message(system_prompt: str, user_prompt: str, *, max_tokens: in
             "text": "",
             "usage": {},
         }
-    client = create_llm_client()
+    client = create_llm_client(provider_override=provider_override, model_override=model_override)
     if client is None:
         return {
             "ok": False,
@@ -317,13 +383,38 @@ def call_mistral_message(system_prompt: str, user_prompt: str, *, max_tokens: in
         }
 
 
-def call_llm_message(system_prompt: str, user_prompt: str, *, max_tokens: int | None = None) -> dict[str, object]:
-    settings = load_llm_settings()
+def call_llm_message(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    max_tokens: int | None = None,
+    provider_override: str | None = None,
+    model_override: str | None = None,
+) -> dict[str, object]:
+    settings = load_llm_settings(provider_override=provider_override, model_override=model_override)
     if settings.provider == "google":
-        return call_google_message(system_prompt, user_prompt, max_tokens=max_tokens)
+        return call_google_message(
+            system_prompt,
+            user_prompt,
+            max_tokens=max_tokens,
+            provider_override=provider_override,
+            model_override=model_override,
+        )
     if settings.provider == "mistral":
-        return call_mistral_message(system_prompt, user_prompt, max_tokens=max_tokens)
-    return call_anthropic_message(system_prompt, user_prompt, max_tokens=max_tokens)
+        return call_mistral_message(
+            system_prompt,
+            user_prompt,
+            max_tokens=max_tokens,
+            provider_override=provider_override,
+            model_override=model_override,
+        )
+    return call_anthropic_message(
+        system_prompt,
+        user_prompt,
+        max_tokens=max_tokens,
+        provider_override=provider_override,
+        model_override=model_override,
+    )
 
 
 def parse_json_response(text: str) -> tuple[dict[str, object] | None, str | None]:

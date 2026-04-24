@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from app.services.llm_client import call_anthropic_message, parse_json_response
+from app.services.llm_client import call_llm_message, parse_json_response
 
 
 WF3_SYSTEM_PROMPT = """
@@ -79,9 +79,17 @@ def request_wf3_llm_payload(
     wf2a_structured: dict[str, object],
     wf2b_structured: dict[str, object],
     global_context_bridge: dict[str, str] | None = None,
+    provider_override: str | None = None,
+    model_override: str | None = None,
 ) -> dict[str, object]:
     user_prompt = build_wf3_user_prompt(wf2a_structured, wf2b_structured, global_context_bridge)
-    llm_result = call_anthropic_message(WF3_SYSTEM_PROMPT, user_prompt, max_tokens=3000)
+    llm_result = call_llm_message(
+        WF3_SYSTEM_PROMPT,
+        user_prompt,
+        max_tokens=3000,
+        provider_override=provider_override,
+        model_override=model_override,
+    )
 
     if not llm_result.get("ok"):
         return {
@@ -100,5 +108,6 @@ def request_wf3_llm_payload(
         "payload": parsed_payload,
         "usage": llm_result.get("usage", {}),
         "raw_text": llm_result.get("text", ""),
+        "provider": llm_result.get("provider", ""),
         "model": llm_result.get("model", ""),
     }

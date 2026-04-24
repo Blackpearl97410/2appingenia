@@ -36,7 +36,13 @@ from app.services.data_loader import (
     load_swot_data as load_demo_data,
 )
 from app.services.document_catalog import build_smoke_test_case
-from app.services.llm_client import call_llm_message, describe_llm_readiness
+from app.services.llm_client import (
+    call_llm_message,
+    describe_llm_readiness,
+    get_configured_providers,
+    get_model_options,
+    load_llm_settings,
+)
 from app.services.metadata import extract_table_metadata, extract_text_metadata
 from app.services.normalizers import dataframe_to_markdown, filter_business_sheets, workbook_to_markdown
 from app.services.parsers import (
@@ -1190,6 +1196,45 @@ def render_upload() -> None:
         help="Enregistre client, dossier, documents, criteres, analyse, resultats et rapport dans Supabase.",
     )
 
+    selected_provider: str | None = None
+    selected_model: str | None = None
+    if prefer_llm:
+        configured_providers = get_configured_providers()
+        llm_settings = load_llm_settings()
+        if configured_providers:
+            st.markdown("#### Choix du moteur LLM")
+            col_model_1, col_model_2 = st.columns(2)
+            provider_index = configured_providers.index(llm_settings.provider) if llm_settings.provider in configured_providers else 0
+            selected_provider = col_model_1.selectbox(
+                "Provider LLM",
+                options=configured_providers,
+                index=provider_index,
+                key="upload_llm_provider",
+                help="Provider utilise pour cette execution du pipeline.",
+            )
+            suggested_models = get_model_options(selected_provider)
+            default_model = load_llm_settings(provider_override=selected_provider).active_model
+            model_choices = list(dict.fromkeys(suggested_models + [default_model, "Autre modele..."]))
+            selected_model_option = col_model_2.selectbox(
+                "Modele LLM",
+                options=model_choices,
+                index=model_choices.index(default_model) if default_model in model_choices else 0,
+                key="upload_llm_model",
+                help="Choisis un modele conseille ou saisis un nom exact personnalise.",
+            )
+            if selected_model_option == "Autre modele...":
+                selected_model = st.text_input(
+                    "Nom exact du modele",
+                    value=default_model,
+                    key="upload_llm_model_custom",
+                    help="Nom exact expose par l'API du provider choisi.",
+                ).strip()
+            else:
+                selected_model = selected_model_option
+            st.caption(f"Execution LLM ciblee : `{selected_provider}` / `{selected_model or default_model}`")
+        else:
+            st.info("Aucun provider LLM configure. Le pipeline restera en heuristique locale.")
+
     selected_client_id: str | None = None
     if persist_supabase:
         st.markdown("#### Client a associer a ce dossier")
@@ -1255,6 +1300,8 @@ def render_upload() -> None:
             completed_bridge=completed_bridge,
             global_context_bridge=global_context_bridge,
             prefer_llm=prefer_llm,
+            llm_provider=selected_provider,
+            llm_model=selected_model,
         )
         persistence_result = None
         if persist_supabase:
@@ -1275,6 +1322,8 @@ def render_upload() -> None:
             "WF2a": execution_meta.get("wf2a", {}).get("engine", "heuristique_locale"),
             "WF2b": execution_meta.get("wf2b", {}).get("engine", "heuristique_locale"),
             "WF3": execution_meta.get("wf3", {}).get("engine", "heuristique_locale"),
+            "Provider LLM": execution_meta.get("llm_selection", {}).get("provider", "defaut"),
+            "Modele LLM": execution_meta.get("llm_selection", {}).get("model", "defaut"),
             "Fallback": "oui"
             if any(
                 step.get("fallback_used")
