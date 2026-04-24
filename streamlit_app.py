@@ -2038,43 +2038,91 @@ def render_document_catalog_page() -> None:
 
 
 def render_supabase_page() -> None:
-    st.subheader("Preparation Supabase")
-    st.write(
-        "Cette vue prepare la base locale du projet : migrations, seed de demonstration, variables d'environnement et futur pont Python/Supabase."
-    )
+    st.subheader("Connexion Supabase")
 
     readiness = describe_supabase_readiness()
+    is_configured = readiness.get("SUPABASE_URL") == "configuree" and readiness.get("SUPABASE_ANON_KEY") == "configuree"
+
+    if is_configured:
+        st.success("Supabase Cloud connecte — toutes les cles sont configurees.")
+    else:
+        st.warning("Cles Supabase non configurees. Ajoutez-les dans les secrets Streamlit ou dans le fichier `.env`.")
+
     render_metadata(readiness)
 
-    st.markdown("### Ce qui est prepare")
-    st.write("- schema SQL de reference a migrer vers `supabase/migrations/`")
-    st.write("- seed local de demonstration pour un premier dossier / client / documents")
-    st.write("- variables d'environnement Supabase pour le futur pont applicatif")
-    st.write("- service Python pret a initialiser un client Supabase si les cles sont configurees")
+    st.markdown("### Infrastructure")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**Mode deploiement**")
+        st.write("Supabase Cloud (hosted) — pas besoin de Docker ni de CLI local")
+        st.write("")
+        st.write("**Schema BDD**")
+        st.write("`supabase/migrations/` — pret a appliquer via le dashboard Supabase")
+    with col2:
+        st.write("**Storage**")
+        st.write("Bucket `subly-documents` — prive, cree automatiquement au premier appel")
+        st.write("")
+        st.write("**Seed**")
+        st.write("`supabase/seed.sql` — donnees de demonstration disponibles")
 
-    st.markdown("### Ce qui manque encore pour demarrer la stack")
-    st.write("- Supabase CLI local")
-    st.write("- runtime compatible Docker / OrbStack / Podman")
-    st.write("- vraies cles projet dans `.env`")
-
-    st.info(
-        "L'environnement actuel ne contient pas encore `npx` ni Docker, donc la structure est preparee mais la stack locale Supabase n'est pas lancee ici."
-    )
+    if is_configured:
+        st.markdown("### Test de connexion")
+        if st.button("Tester la connexion Supabase", key="btn_test_supabase"):
+            from app.services.supabase_bridge import create_supabase_client
+            client = create_supabase_client()
+            if client is None:
+                st.error("Impossible de creer le client Supabase.")
+            else:
+                try:
+                    resp = client.table("clients").select("id").limit(1).execute()
+                    st.success(f"Connexion BDD OK — table `clients` accessible ({len(resp.data)} ligne(s))")
+                except Exception as exc:
+                    st.error(f"Connexion echouee : {exc}")
 
 
 def render_llm_page() -> None:
-    st.subheader("LLM direct depuis Python")
-    st.write(
-        "Cette vue prepare l'integration Claude API en appels directs Python, sans passer par n8n pour l'instant."
-    )
+    st.subheader("Connexion Claude API")
 
-    render_metadata(describe_llm_readiness())
+    llm_info = describe_llm_readiness()
+    is_configured = llm_info.get("ANTHROPIC_API_KEY") == "configuree"
 
-    st.markdown("### Strategie retenue")
-    st.write("- appels directs depuis `app/services/llm_client.py`")
-    st.write("- cible prioritaire : `WF2a`")
-    st.write("- heuristiques locales gardees en secours tant que la cle n'est pas configuree")
-    st.write("- pas de blocage de l'app si la configuration LLM est absente")
+    if is_configured:
+        st.success("Claude API configuree et operationnelle.")
+    else:
+        st.warning("Cle Anthropic non configuree. Ajoutez `ANTHROPIC_API_KEY` dans les secrets Streamlit ou dans le fichier `.env`.")
+
+    render_metadata(llm_info)
+
+    st.markdown("### Strategie d'integration")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**Point d'entree**")
+        st.write("`app/services/llm_client.py` — appels directs Python")
+        st.write("")
+        st.write("**Modele**")
+        st.write(f"`{llm_info.get('Modele', 'claude-sonnet-4-20250514')}`")
+    with col2:
+        st.write("**Fallback**")
+        st.write("Heuristiques locales actives si la cle est absente — l'app ne plante jamais")
+        st.write("")
+        st.write("**Usage prevu**")
+        st.write("WF2a (criteres), WF2b (profil client), WF3 (scoring), WF4 (rapport)")
+
+    if is_configured:
+        st.markdown("### Test de connexion")
+        if st.button("Tester l'appel Claude API", key="btn_test_llm"):
+            from app.services.llm_client import call_anthropic_message
+            with st.spinner("Appel en cours..."):
+                result = call_anthropic_message(
+                    "Tu es un assistant de test. Reponds en une seule phrase courte.",
+                    "Dis juste OK pour confirmer que tu fonctionnes."
+                )
+            if result.get("ok"):
+                usage = result.get("usage", {})
+                st.success(f"Claude repond : *{result.get('text', '')}*")
+                st.caption(f"Modele : {result.get('model')} — {usage.get('input_tokens')} tokens entree / {usage.get('output_tokens')} tokens sortie")
+            else:
+                st.error(f"Echec : {result.get('error')}")
 
     st.markdown("### Test de preparation WF2a")
     smoke_case = build_smoke_test_case()
