@@ -8,6 +8,7 @@ from app.services.metadata import extract_text_metadata
 from app.services.parsers import get_uploaded_bytes
 from app.services.supabase_bridge import build_storage_path, create_supabase_client, ensure_private_documents_bucket, load_supabase_settings
 from app.services.wf2 import extract_document_payloads
+from app.services.client_manager import get_operator_id
 
 
 def _sanitize_text(value: object) -> str:
@@ -129,6 +130,7 @@ def persist_pipeline_outputs(
     client_files,
     project_files,
     pipeline_outputs: dict[str, object],
+    selected_client_id: str | None = None,
 ) -> dict[str, object]:
     ensure_private_documents_bucket()
     settings = load_supabase_settings()
@@ -137,12 +139,23 @@ def persist_pipeline_outputs(
         return {"ok": False, "error": "client_supabase_non_configure"}
 
     try:
-        return _persist_pipeline_outputs_inner(client, settings, dossier_files, client_files, project_files, pipeline_outputs)
+        return _persist_pipeline_outputs_inner(
+            client, settings,
+            dossier_files, client_files, project_files,
+            pipeline_outputs,
+            selected_client_id=selected_client_id,
+        )
     except Exception as exc:
         return {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
 
 
-def _persist_pipeline_outputs_inner(client, settings, dossier_files, client_files, project_files, pipeline_outputs):
+def _persist_pipeline_outputs_inner(
+    client, settings,
+    dossier_files, client_files, project_files,
+    pipeline_outputs,
+    selected_client_id: str | None = None,
+):
+    operator_id = get_operator_id()
     wf2a = pipeline_outputs["wf2a"]
     wf2b = pipeline_outputs["wf2b"]
     wf3 = pipeline_outputs["wf3"]
@@ -153,23 +166,44 @@ def _persist_pipeline_outputs_inner(client, settings, dossier_files, client_file
     donnees_projet = wf2b.get("donnees_projet", {})
     wf2a_metadata = wf2a.get("metadata", {})
 
-    client_name = str(profil_client.get("nom_structure", {}).get("value", "")).strip() or "Client non identifie"
-    existing_clients = client.table("clients").select("*").eq("nom", client_name).limit(1).execute().data
-    client_payload = {
-        "nom": client_name,
-        "siret": _sanitize_text(profil_client.get("siret", {}).get("value", "")) or None,
-        "forme_juridique": _sanitize_text(profil_client.get("forme_juridique", {}).get("value", "")) or None,
-        "secteur_activite": ", ".join(
-            _sanitize_text(item.get("value", "")) for item in profil_client.get("activites", []) if item.get("value")
-        ) or None,
-        "contact_email": _sanitize_text(profil_client.get("email", {}).get("value", "")) or None,
-        "contact_telephone": _sanitize_text(profil_client.get("telephone", {}).get("value", "")) or None,
-        "type_structure": _sanitize_text(profil_client.get("forme_juridique", {}).get("value", "")) or None,
-    }
-    if existing_clients:
-        client_row = client.table("clients").update(client_payload).eq("id", existing_clients[0]["id"]).execute().data[0]
+    # ── Résolution du client ────────────────────────────────────────────────
+    if selected_client_id:
+        # Client explicitement choisi dans l'interface → on le récupère et on
+        # enrichit ses données avec ce qu'on extrait des documents.
+        existing_rows = client.table("clients").select("*").eq("id", selected_client_id).limit(1).execute().data
+        if not existing_rows:
+            raise ValueError(f"Client introuvable : {selected_client_id}")
+        client_row = existing_rows[0]
+        # Enrichissement optionnel (ne jamais écraser les valeurs déjà renseignées)
+        update_payload: dict[str, object] = {}
+        extracted_email = _sanitize_text(profil_client.get("email", {}).get("value", ""))
+        extracted_tel = _sanitize_text(profil_client.get("telephone", {}).get("value", ""))
+        if extracted_email and not client_row.get("contact_email"):
+            update_payload["contact_email"] = extracted_email
+        if extracted_tel and not client_row.get("contact_telephone"):
+            update_payload["contact_telephone"] = extracted_tel
+        if update_payload:
+            client_row = client.table("clients").update(update_payload).eq("id", selected_client_id).execute().data[0]
     else:
-        client_row = client.table("clients").insert(client_payload).execute().data[0]
+        # Fallback : UPSERT par nom (comportement original, si pas de sélection)
+        client_name = str(profil_client.get("nom_structure", {}).get("value", "")).strip() or "Client non identifie"
+        client_payload = {
+            "nom": client_name,
+            "siret": _sanitize_text(profil_client.get("siret", {}).get("value", "")) or None,
+            "forme_juridique": _sanitize_text(profil_client.get("forme_juridique", {}).get("value", "")) or None,
+            "secteur_activite": ", ".join(
+                _sanitize_text(item.get("value", "")) for item in profil_client.get("activites", []) if item.get("value")
+            ) or None,
+            "contact_email": _sanitize_text(profil_client.get("email", {}).get("value", "")) or None,
+            "contact_telephone": _sanitize_text(profil_client.get("telephone", {}).get("value", "")) or None,
+            "type_structure": _sanitize_text(profil_client.get("forme_juridique", {}).get("value", "")) or None,
+            "owner_id": operator_id,
+        }
+        existing_clients = client.table("clients").select("*").eq("nom", client_name).eq("owner_id", operator_id).limit(1).execute().data
+        if existing_clients:
+            client_row = client.table("clients").update(client_payload).eq("id", existing_clients[0]["id"]).execute().data[0]
+        else:
+            client_row = client.table("clients").insert(client_payload).execute().data[0]
 
     dossier_title = _sanitize_text(donnees_projet.get("titre_projet", {}).get("value", ""))
     if not dossier_title or dossier_title == "Non detecte":
@@ -184,6 +218,7 @@ def _persist_pipeline_outputs_inner(client, settings, dossier_files, client_file
         "client_id": client_row["id"],
         "montant_max": _extract_first_numeric(_sanitize_text(wf2a_metadata.get("montant_max_detecte", ""))),
         "source_url": None,
+        "owner_id": operator_id,
         "donnees_projet": {
             "titre_projet": _sanitize_text(donnees_projet.get("titre_projet", {}).get("value", "")),
             "montant_detecte": _sanitize_text(donnees_projet.get("montant_detecte", {}).get("value", "")),
