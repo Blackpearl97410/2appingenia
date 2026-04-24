@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from pathlib import Path
 import re
 
@@ -43,6 +44,10 @@ from app.services.wf2 import (
 from app.services.wf3 import build_wf3_analysis
 from app.services.wf4 import build_wf4_outputs
 from app.services.supabase_bridge import describe_supabase_readiness
+from app.services.llm_client import describe_llm_readiness
+from app.services.persistence import persist_pipeline_outputs
+from app.services.pipeline_runtime import resolve_pipeline_outputs
+from app.services.wf2_llm import request_wf2a_llm_payload
 
 
 def render_metadata(metadata: dict[str, str]) -> None:
@@ -51,6 +56,33 @@ def render_metadata(metadata: dict[str, str]) -> None:
     items = list(metadata.items())
     for index, (label, value) in enumerate(items):
         cols[index % 2].write(f"**{label}** : {value}")
+
+
+def build_files_signature(block_files_map: dict[str, list]) -> str:
+    serializable = {}
+    for block_name, files in block_files_map.items():
+        serializable[block_name] = [
+            {
+                "name": uploaded_file.name,
+                "size": getattr(uploaded_file, "size", None),
+                "type": getattr(uploaded_file, "type", None),
+            }
+            for uploaded_file in files
+        ]
+    return json.dumps(serializable, sort_keys=True, ensure_ascii=False)
+
+
+def get_active_pipeline_outputs(signature: str) -> dict[str, object] | None:
+    stored_signature = st.session_state.get("pipeline_signature")
+    if stored_signature != signature:
+        return None
+    return st.session_state.get("pipeline_outputs")
+
+
+def store_pipeline_outputs(signature: str, outputs: dict[str, object], persistence: dict[str, object] | None = None) -> None:
+    st.session_state["pipeline_signature"] = signature
+    st.session_state["pipeline_outputs"] = outputs
+    st.session_state["pipeline_persistence"] = persistence or {}
 
 
 def choose_priority_value(block_candidates: dict[str, str], priority_order: list[str]) -> str:
@@ -212,20 +244,30 @@ def extract_wf2a_dossier_criteria(uploaded_files) -> list[dict[str, str]]:
     return extract_wf2a_structured(uploaded_files).get("criteres", [])
 
 
-def render_wf2a_dossier_section(dossier_files) -> None:
+def render_wf2a_dossier_section(
+    dossier_files,
+    wf2a_structured: dict[str, object] | None = None,
+    execution_meta: dict[str, object] | None = None,
+) -> None:
     st.subheader("WF2a local - Extraction criteres dossier")
 
     if not dossier_files:
         st.info("Aucun document dossier charge pour lancer l'extraction WF2a locale.")
         return
 
-    wf2a = extract_wf2a_structured(dossier_files)
+    wf2a = wf2a_structured or extract_wf2a_structured(dossier_files)
     criteria = wf2a.get("criteres", [])
     metadata = wf2a.get("metadata", {})
 
     if not criteria:
         st.warning("Aucun critere explicite n'a ete detecte dans le bloc dossier.")
         return
+
+    if execution_meta:
+        st.caption(
+            f"Moteur actif : {execution_meta.get('engine', 'heuristique_locale')}"
+            + (" (fallback local)" if execution_meta.get("fallback_used") else "")
+        )
 
     st.markdown("### Metadata WF2a")
     render_metadata({
@@ -261,9 +303,20 @@ def extract_wf2b_project_data(project_files) -> dict[str, str]:
     return summarize_wf2b_project_data(wf2b)
 
 
-def render_wf2b_section(client_files, project_files) -> None:
+def render_wf2b_section(
+    client_files,
+    project_files,
+    wf2b_structured: dict[str, object] | None = None,
+    execution_meta: dict[str, object] | None = None,
+) -> None:
     st.subheader("WF2b local - Profil client et donnees projet")
-    wf2b = extract_wf2b_structured(client_files, project_files)
+    wf2b = wf2b_structured or extract_wf2b_structured(client_files, project_files)
+
+    if execution_meta:
+        st.caption(
+            f"Moteur actif : {execution_meta.get('engine', 'heuristique_locale')}"
+            + (" (fallback local)" if execution_meta.get("fallback_used") else "")
+        )
 
     col1, col2 = st.columns(2)
 
@@ -951,6 +1004,7 @@ def render_wf3_section(
     project_files,
     bridge: dict[str, str] | None = None,
     global_bridge: dict[str, str] | None = None,
+    pipeline_outputs: dict[str, object] | None = None,
 ) -> None:
     st.subheader("WF3 local - Matching dossier / client / projet")
 
@@ -958,8 +1012,8 @@ def render_wf3_section(
         st.info("Le WF3 local demande des documents dans les 3 blocs : dossier, client et projet.")
         return
 
-    wf2a_structured = extract_wf2a_structured(dossier_files)
-    wf2b_structured = extract_wf2b_structured(client_files, project_files)
+    wf2a_structured = pipeline_outputs.get("wf2a") if pipeline_outputs else extract_wf2a_structured(dossier_files)
+    wf2b_structured = pipeline_outputs.get("wf2b") if pipeline_outputs else extract_wf2b_structured(client_files, project_files)
 
     if bridge is None:
         bridge = build_bridge_from_wf2(wf2a_structured, wf2b_structured)
@@ -975,16 +1029,26 @@ def render_wf3_section(
             fallback_cross_summary,
             bridge,
         )
-    completed_wf2a, completed_wf2b = merge_completed_bridge_into_wf2(
-        wf2a_structured,
-        wf2b_structured,
-        bridge,
-    )
-    wf3 = build_wf3_analysis(
-        completed_wf2a,
-        completed_wf2b,
-        global_context_bridge=global_bridge,
-    )
+    if pipeline_outputs:
+        wf3 = pipeline_outputs.get("wf3", {})
+    else:
+        completed_wf2a, completed_wf2b = merge_completed_bridge_into_wf2(
+            wf2a_structured,
+            wf2b_structured,
+            bridge,
+        )
+        wf3 = build_wf3_analysis(
+            completed_wf2a,
+            completed_wf2b,
+            global_context_bridge=global_bridge,
+        )
+
+    execution_meta = pipeline_outputs.get("execution", {}).get("wf3") if pipeline_outputs else None
+    if execution_meta:
+        st.caption(
+            f"Moteur actif : {execution_meta.get('engine', 'heuristique_locale')}"
+            + (" (fallback local)" if execution_meta.get("fallback_used") else "")
+        )
 
     counts = wf3.get("counts", {})
     sous_scores = wf3.get("sous_scores", {})
@@ -1075,6 +1139,7 @@ def render_wf4_section(
     project_files,
     bridge: dict[str, str] | None = None,
     global_bridge: dict[str, str] | None = None,
+    pipeline_outputs: dict[str, object] | None = None,
 ) -> None:
     st.subheader("WF4 local - Rapport, pre-remplissage et suggestions")
 
@@ -1082,34 +1147,46 @@ def render_wf4_section(
         st.info("Le WF4 local demande un dossier, un client et un projet pour generer des sorties utiles.")
         return
 
-    wf2a_structured = extract_wf2a_structured(dossier_files)
-    wf2b_structured = extract_wf2b_structured(client_files, project_files)
-    if bridge is None:
-        bridge = build_bridge_from_wf2(wf2a_structured, wf2b_structured)
-    if global_bridge is None:
-        fallback_block_files_map = {
-            "Documents dossier": dossier_files,
-            "Documents client": client_files,
-            "Documents projet": project_files,
-        }
-        fallback_cross_summary = build_global_cross_block_summary(fallback_block_files_map)
-        global_bridge = build_global_context_bridge(
-            fallback_block_files_map,
-            fallback_cross_summary,
+    if pipeline_outputs:
+        wf4_outputs = pipeline_outputs.get("wf4", {})
+    else:
+        wf2a_structured = extract_wf2a_structured(dossier_files)
+        wf2b_structured = extract_wf2b_structured(client_files, project_files)
+        if bridge is None:
+            bridge = build_bridge_from_wf2(wf2a_structured, wf2b_structured)
+        if global_bridge is None:
+            fallback_block_files_map = {
+                "Documents dossier": dossier_files,
+                "Documents client": client_files,
+                "Documents projet": project_files,
+            }
+            fallback_cross_summary = build_global_cross_block_summary(fallback_block_files_map)
+            global_bridge = build_global_context_bridge(
+                fallback_block_files_map,
+                fallback_cross_summary,
+                bridge,
+            )
+
+        completed_wf2a, completed_wf2b = merge_completed_bridge_into_wf2(
+            wf2a_structured,
+            wf2b_structured,
             bridge,
         )
+        wf3_analysis = build_wf3_analysis(
+            completed_wf2a,
+            completed_wf2b,
+            global_context_bridge=global_bridge,
+        )
+        wf4_outputs = build_wf4_outputs(completed_wf2b, wf3_analysis)
 
-    completed_wf2a, completed_wf2b = merge_completed_bridge_into_wf2(
-        wf2a_structured,
-        wf2b_structured,
-        bridge,
-    )
-    wf3_analysis = build_wf3_analysis(
-        completed_wf2a,
-        completed_wf2b,
-        global_context_bridge=global_bridge,
-    )
-    wf4_outputs = build_wf4_outputs(completed_wf2b, wf3_analysis)
+    execution_meta = pipeline_outputs.get("execution", {}) if pipeline_outputs else {}
+    if execution_meta:
+        st.caption(
+            "Moteurs actifs : "
+            f"WF2a={execution_meta.get('wf2a', {}).get('engine', 'heuristique_locale')}, "
+            f"WF2b={execution_meta.get('wf2b', {}).get('engine', 'heuristique_locale')}, "
+            f"WF3={execution_meta.get('wf3', {}).get('engine', 'heuristique_locale')}"
+        )
 
     rapport = wf4_outputs.get("rapport_structured", {})
     preremplissage = list(wf4_outputs.get("champs_preremplissage", []))
@@ -1985,6 +2062,60 @@ def render_supabase_page() -> None:
     )
 
 
+def render_llm_page() -> None:
+    st.subheader("LLM direct depuis Python")
+    st.write(
+        "Cette vue prepare l'integration Claude API en appels directs Python, sans passer par n8n pour l'instant."
+    )
+
+    render_metadata(describe_llm_readiness())
+
+    st.markdown("### Strategie retenue")
+    st.write("- appels directs depuis `app/services/llm_client.py`")
+    st.write("- cible prioritaire : `WF2a`")
+    st.write("- heuristiques locales gardees en secours tant que la cle n'est pas configuree")
+    st.write("- pas de blocage de l'app si la configuration LLM est absente")
+
+    st.markdown("### Test de preparation WF2a")
+    smoke_case = build_smoke_test_case()
+    dossier_files = smoke_case["dossier"]
+
+    if not dossier_files:
+        st.info("Aucun document dossier de smoke-test n'est disponible.")
+        return
+
+    st.write("Documents dossier du test :")
+    for item in dossier_files:
+        st.write(f"- {item.name}")
+
+    if st.button("Tester la preparation WF2a LLM", key="wf2a_llm_prepare"):
+        result = request_wf2a_llm_payload(dossier_files)
+        if not result.get("ok"):
+            st.warning(f"WF2a LLM non execute : {result.get('error', 'erreur inconnue')}")
+        else:
+            payload = result.get("payload", {})
+            metadata = payload.get("metadata", {}) if isinstance(payload, dict) else {}
+            criteres = payload.get("criteres", []) if isinstance(payload, dict) else []
+            render_metadata({
+                "Mode": str(result.get("mode", "llm_direct_python")),
+                "Modele": str(result.get("model", "")),
+                "Input tokens": str(result.get("usage", {}).get("input_tokens", "inconnu")),
+                "Output tokens": str(result.get("usage", {}).get("output_tokens", "inconnu")),
+                "Criteres retournes": str(len(criteres)),
+            })
+            if metadata:
+                st.write("**Metadata retournee**")
+                render_metadata({
+                    "Type dossier": str(metadata.get("type_dossier_detecte", "inconnu")),
+                    "Financeur": str(metadata.get("financeur_detecte", "inconnu")),
+                    "Montant max": str(metadata.get("montant_max_detecte", "inconnu")),
+                    "Date limite": str(metadata.get("date_limite_detectee", "inconnue")),
+                })
+            if criteres:
+                with st.expander("Voir le payload JSON brut", expanded=False):
+                    st.json(payload)
+
+
 def render_upload_block(title: str, help_text: str, uploader_key: str):
     st.subheader(title)
     st.caption(help_text)
@@ -2061,6 +2192,8 @@ def render_upload() -> None:
         cross_summary,
         bridge,
     )
+    files_signature = build_files_signature(block_files_map)
+    active_pipeline_outputs = get_active_pipeline_outputs(files_signature)
 
     st.divider()
     diagnostic_tab, extraction_tab, bridge_tab, wf4_tab = st.tabs(
@@ -2078,6 +2211,76 @@ def render_upload() -> None:
         with st.expander("Pont global - Contexte documentaire", expanded=False):
             render_global_context_bridge(global_context_bridge)
 
+    st.divider()
+    st.markdown("### Execution pilotee")
+    llm_ready = describe_llm_readiness()
+    supabase_ready = describe_supabase_readiness()
+    use_llm_default = llm_ready.get("ANTHROPIC_API_KEY") == "configuree"
+    persist_default = (
+        supabase_ready.get("SUPABASE_URL") == "configuree"
+        and supabase_ready.get("SUPABASE_SERVICE_ROLE_KEY") == "configuree"
+    )
+    col_exec_1, col_exec_2 = st.columns(2)
+    prefer_llm = col_exec_1.checkbox(
+        "Preferer Claude API pour WF2/WF3",
+        value=use_llm_default,
+        help="Utilise Claude si la cle API est configuree, sinon repasse automatiquement sur l'heuristique locale.",
+    )
+    persist_supabase = col_exec_2.checkbox(
+        "Persister les resultats dans Supabase",
+        value=persist_default,
+        help="Enregistre client, dossier, documents, criteres, analyse, resultats et rapport dans Supabase.",
+    )
+    if st.button("Executer le pipeline", key="execute_pipeline_button", type="primary"):
+        pipeline_outputs = resolve_pipeline_outputs(
+            block_files_map["Documents dossier"],
+            block_files_map["Documents client"],
+            block_files_map["Documents projet"],
+            completed_bridge=completed_bridge,
+            global_context_bridge=global_context_bridge,
+            prefer_llm=prefer_llm,
+        )
+        persistence_result = None
+        if persist_supabase:
+            persistence_result = persist_pipeline_outputs(
+                block_files_map["Documents dossier"],
+                block_files_map["Documents client"],
+                block_files_map["Documents projet"],
+                pipeline_outputs,
+            )
+        store_pipeline_outputs(files_signature, pipeline_outputs, persistence_result)
+        active_pipeline_outputs = pipeline_outputs
+
+    if active_pipeline_outputs:
+        execution_meta = active_pipeline_outputs.get("execution", {})
+        st.success("Derniere execution disponible pour les fichiers actuellement charges.")
+        render_metadata(
+            {
+                "WF2a": execution_meta.get("wf2a", {}).get("engine", "heuristique_locale"),
+                "WF2b": execution_meta.get("wf2b", {}).get("engine", "heuristique_locale"),
+                "WF3": execution_meta.get("wf3", {}).get("engine", "heuristique_locale"),
+                "Fallback": "oui"
+                if any(
+                    step.get("fallback_used")
+                    for step in execution_meta.values()
+                    if isinstance(step, dict)
+                )
+                else "non",
+            }
+        )
+        persistence_result = st.session_state.get("pipeline_persistence", {})
+        if persistence_result:
+            if persistence_result.get("ok"):
+                st.caption(
+                    f"Supabase : analyse {persistence_result.get('analyse_id')} enregistree, "
+                    f"{persistence_result.get('documents_count', 0)} document(s), "
+                    f"{persistence_result.get('criteres_count', 0)} critere(s)."
+                )
+            else:
+                st.warning(f"Persistance Supabase non finalisee : {persistence_result.get('error', 'erreur inconnue')}")
+    else:
+        st.info("Aucune execution pilotee en memoire pour les fichiers actuels. Les vues ci-dessous utilisent les sorties locales par defaut.")
+
     with diagnostic_tab:
         st.markdown("### Lecture prioritaire")
         render_cross_block_summary(cross_summary)
@@ -2088,15 +2291,22 @@ def render_upload() -> None:
             block_files_map["Documents projet"],
             bridge=completed_bridge,
             global_bridge=global_context_bridge,
+            pipeline_outputs=active_pipeline_outputs,
         )
 
     with extraction_tab:
         with st.expander("WF2a local - Criteres dossier", expanded=True):
-            render_wf2a_dossier_section(block_files_map["Documents dossier"])
+            render_wf2a_dossier_section(
+                block_files_map["Documents dossier"],
+                wf2a_structured=active_pipeline_outputs.get("wf2a") if active_pipeline_outputs else None,
+                execution_meta=active_pipeline_outputs.get("execution", {}).get("wf2a") if active_pipeline_outputs else None,
+            )
         with st.expander("WF2b local - Profil client et donnees projet", expanded=True):
             render_wf2b_section(
                 block_files_map["Documents client"],
                 block_files_map["Documents projet"],
+                wf2b_structured=active_pipeline_outputs.get("wf2b") if active_pipeline_outputs else None,
+                execution_meta=active_pipeline_outputs.get("execution", {}).get("wf2b") if active_pipeline_outputs else None,
             )
 
     with wf4_tab:
@@ -2106,6 +2316,7 @@ def render_upload() -> None:
             block_files_map["Documents projet"],
             bridge=completed_bridge,
             global_bridge=global_context_bridge,
+            pipeline_outputs=active_pipeline_outputs,
         )
 
 
@@ -2124,6 +2335,7 @@ def main() -> None:
             "Donnees demo",
             "Base documentaire",
             "Supabase",
+            "LLM",
             "Upload",
         ],
     )
@@ -2138,6 +2350,8 @@ def main() -> None:
         render_document_catalog_page()
     elif page == "Supabase":
         render_supabase_page()
+    elif page == "LLM":
+        render_llm_page()
     else:
         render_upload()
 
