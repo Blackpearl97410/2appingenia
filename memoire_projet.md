@@ -783,3 +783,42 @@ Le rapport analytique et les suggestions restent presents, mais passent en secon
 - `/Users/alexandrepaviel/Desktop/OF/application AAP ingénia/app/services/llm_client.py`
 - `/Users/alexandrepaviel/Desktop/OF/application AAP ingénia/.env.example`
 - `/Users/alexandrepaviel/Desktop/OF/application AAP ingénia/contexte/# CLAUDE.md`
+
+## WF4 pilote par prompts systeme
+
+Une nouvelle etape structurante a ete franchie :
+- `WF4` n'est plus seulement template / heuristique
+- il dispose maintenant d'un vrai module LLM dedie : `/Users/alexandrepaviel/Desktop/OF/application AAP ingénia/app/services/wf4_llm.py`
+
+Ce module contient 3 prompts systeme distincts :
+- `WF4A` : document de presentation du projet
+- `WF4B` : budget previsionnel du projet
+- `WF4C` : budget previsionnel de structure si requis
+
+Ces prompts suivent le framework demande par l'utilisateur avec :
+- role
+- objectif
+- contexte
+- base de donnees / sources
+- processus de travail
+- iteration des donnees
+- recherche croisee
+- questionnement prealable / garde-fous
+
+Le runtime `/Users/alexandrepaviel/Desktop/OF/application AAP ingénia/app/services/pipeline_runtime.py` :
+- appelle maintenant `WF4A`, `WF4B` et `WF4C`
+- normalise les sorties JSON dans le format applicatif
+- conserve un fallback heuristique si une sous-sortie LLM echoue
+- expose les metadonnees d'execution dans `execution["wf4"]`
+
+Validation reelle faite :
+- compilation Python OK
+- imports OK
+- smoke-test cible sur Mistral `mistral-small-2603` : OK
+- smoke-test complet `WF4A + WF4B + WF4C` : OK
+- resultat : `engine = llm_direct_python`, `fallback_used = false`
+
+Point de vigilance restant :
+- la qualite finale depend encore fortement de `WF2/WF3`
+- les budgets restent des trames assistees, pas des budgets comptables finaux
+- il faudra encore affiner le ton et la granularite des sections selon les types d'appel

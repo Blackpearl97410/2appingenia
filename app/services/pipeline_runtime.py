@@ -18,7 +18,17 @@ from app.services.wf2_llm import request_wf2a_llm_payload
 from app.services.wf2b_llm import request_wf2b_llm_payload
 from app.services.wf3 import build_wf3_analysis
 from app.services.wf3_llm import request_wf3_llm_payload
-from app.services.wf4 import build_wf4_outputs
+from app.services.wf4 import (
+    build_completion_checklist,
+    build_project_budget_markdown,
+    build_project_presentation_markdown,
+    build_wf4_outputs,
+)
+from app.services.wf4_llm import (
+    request_wf4a_llm_payload,
+    request_wf4b_llm_payload,
+    request_wf4c_llm_payload,
+)
 
 
 def _coerce_bool(value: object, default: bool = False) -> bool:
@@ -279,6 +289,265 @@ def resolve_wf3_analysis(
     return structured, meta
 
 
+def _dedup_strings(items: list[str]) -> list[str]:
+    return list(dict.fromkeys(item.strip() for item in items if str(item).strip()))
+
+
+def _normalize_presentation_payload(payload: dict[str, object], fallback_outputs: dict[str, object]) -> dict[str, object]:
+    payload = payload if isinstance(payload, dict) else {}
+    sections = []
+    raw_sections = payload.get("sections", [])
+    if isinstance(raw_sections, list):
+        raw_sections = sorted(
+            [item for item in raw_sections if isinstance(item, dict)],
+            key=lambda item: int(item.get("ordre", 999) or 999),
+        )
+        for item in raw_sections:
+            title = str(item.get("titre", "")).strip() or "Section"
+            objective = str(item.get("objectif_section", "")).strip()
+            body = str(item.get("contenu_redige", "")).strip() or "A_COMPLETER"
+            vigilance = [str(entry).strip() for entry in item.get("points_de_vigilance", []) if str(entry).strip()]
+            sources = [str(entry).strip() for entry in item.get("sources_utilisees", []) if str(entry).strip()]
+            content_parts = []
+            if objective:
+                content_parts.append(f"Objectif : {objective}")
+            content_parts.append(body)
+            if vigilance:
+                content_parts.append("Points de vigilance : " + " | ".join(vigilance))
+            if sources:
+                content_parts.append("Sources : " + " | ".join(sources))
+            sections.append(
+                {
+                    "section": title,
+                    "statut": str(item.get("statut", "a_completer")).strip() or "a_completer",
+                    "contenu": "\n\n".join(content_parts),
+                }
+            )
+
+    if not sections:
+        return fallback_outputs["livrables"]["presentation_projet"]
+
+    markdown = build_project_presentation_markdown(sections)
+    return {
+        "sections": sections,
+        "markdown": markdown,
+        "resume_executif": str(payload.get("resume_executif", "")).strip(),
+        "donnees_manquantes": _dedup_strings([str(item) for item in payload.get("donnees_manquantes", [])]),
+        "pieces_ou_annexes_a_prevoir": _dedup_strings(
+            [str(item) for item in payload.get("pieces_ou_annexes_a_prevoir", [])]
+        ),
+    }
+
+
+def _normalize_budget_rows(items: object) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    if not isinstance(items, list):
+        return rows
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "poste": str(item.get("poste", "")).strip() or "A_COMPLETER",
+                "montant_previsionnel": str(item.get("montant", "")).strip() or "A_COMPLETER",
+                "commentaire": str(item.get("commentaire", "")).strip(),
+                "statut": str(item.get("statut", "")).strip(),
+                "source": str(item.get("source", "")).strip(),
+            }
+        )
+    return rows
+
+
+def _normalize_budget_payload(payload: dict[str, object], fallback_structured: dict[str, object]) -> dict[str, object]:
+    payload = payload if isinstance(payload, dict) else {}
+    charges = _normalize_budget_rows(payload.get("charges", []))
+    produits = _normalize_budget_rows(payload.get("produits", []))
+    if not charges and not produits:
+        return fallback_structured
+
+    notes = _dedup_strings([str(item) for item in payload.get("notes_budgetaires", [])])
+    totaux = payload.get("totaux", {}) if isinstance(payload.get("totaux", {}), dict) else {}
+    if totaux:
+        notes.append(
+            "Totaux : charges="
+            f"{str(totaux.get('charges', 'A_COMPLETER')).strip() or 'A_COMPLETER'} | "
+            f"produits={str(totaux.get('produits', 'A_COMPLETER')).strip() or 'A_COMPLETER'} | "
+            f"equilibre={str(totaux.get('equilibre', 'A_CONFIRMER')).strip() or 'A_CONFIRMER'}"
+        )
+
+    return {
+        "titre": str(payload.get("titre_document", fallback_structured.get("titre", "Budget previsionnel"))).strip()
+        or fallback_structured.get("titre", "Budget previsionnel"),
+        "colonnes": list(payload.get("colonnes", fallback_structured.get("colonnes", []))),
+        "charges": charges,
+        "produits": produits,
+        "notes": notes,
+        "points_a_completer": _dedup_strings([str(item) for item in payload.get("points_a_completer", [])]),
+    }
+
+
+def resolve_wf4_outputs(
+    wf2a_structured: dict[str, object],
+    wf2b_structured: dict[str, object],
+    wf3_analysis: dict[str, object],
+    prefer_llm: bool = True,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+) -> tuple[dict[str, object], dict[str, object]]:
+    fallback_outputs = build_wf4_outputs(wf2b_structured, wf3_analysis)
+    meta = {"engine": "heuristique_locale", "fallback_used": False, "parts": {}}
+    if not prefer_llm:
+        return fallback_outputs, meta
+
+    wf4_outputs = deepcopy(fallback_outputs)
+    llm_parts_ok = 0
+    active_provider = ""
+    active_model = ""
+
+    wf4a_result = request_wf4a_llm_payload(
+        wf2a_structured,
+        wf2b_structured,
+        wf3_analysis,
+        provider_override=llm_provider,
+        model_override=llm_model,
+    )
+    if wf4a_result.get("provider"):
+        active_provider = str(wf4a_result.get("provider", ""))
+        active_model = str(wf4a_result.get("model", ""))
+    if wf4a_result.get("ok") and isinstance(wf4a_result.get("payload"), dict):
+        presentation = _normalize_presentation_payload(
+            wf4a_result["payload"],
+            fallback_outputs,
+        )
+        wf4_outputs["livrables"]["presentation_projet"] = presentation
+        if presentation.get("resume_executif"):
+            wf4_outputs["rapport_structured"]["resume_executif"] = presentation["resume_executif"]
+        llm_parts_ok += 1
+        meta["parts"]["presentation_projet"] = "llm"
+    else:
+        meta["parts"]["presentation_projet"] = f"fallback:{wf4a_result.get('error', 'llm_error')}"
+
+    wf4b_result = request_wf4b_llm_payload(
+        wf2a_structured,
+        wf2b_structured,
+        wf3_analysis,
+        provider_override=llm_provider,
+        model_override=llm_model,
+    )
+    if not active_provider and wf4b_result.get("provider"):
+        active_provider = str(wf4b_result.get("provider", ""))
+        active_model = str(wf4b_result.get("model", ""))
+    if wf4b_result.get("ok") and isinstance(wf4b_result.get("payload"), dict):
+        budget_structured = _normalize_budget_payload(
+            wf4b_result["payload"],
+            fallback_outputs["livrables"]["budget_projet"]["structured"],
+        )
+        wf4_outputs["livrables"]["budget_projet"] = {
+            "structured": budget_structured,
+            "markdown": build_project_budget_markdown(budget_structured),
+        }
+        llm_parts_ok += 1
+        meta["parts"]["budget_projet"] = "llm"
+    else:
+        meta["parts"]["budget_projet"] = f"fallback:{wf4b_result.get('error', 'llm_error')}"
+
+    wf4c_result = request_wf4c_llm_payload(
+        wf2a_structured,
+        wf2b_structured,
+        wf3_analysis,
+        provider_override=llm_provider,
+        model_override=llm_model,
+    )
+    if not active_provider and wf4c_result.get("provider"):
+        active_provider = str(wf4c_result.get("provider", ""))
+        active_model = str(wf4c_result.get("model", ""))
+    if wf4c_result.get("ok") and isinstance(wf4c_result.get("payload"), dict):
+        payload = wf4c_result["payload"]
+        required = bool(payload.get("required"))
+        if required:
+            structure_structured = _normalize_budget_payload(
+                payload,
+                fallback_outputs["livrables"]["budget_structure"]["structured"] or {},
+            )
+            wf4_outputs["livrables"]["budget_structure"] = {
+                "required": True,
+                "structured": structure_structured,
+                "markdown": build_project_budget_markdown(structure_structured),
+                "niveau_certitude": str(payload.get("niveau_certitude", "moyen")).strip(),
+                "justification_requirement": str(payload.get("justification_requirement", "")).strip(),
+            }
+        else:
+            wf4_outputs["livrables"]["budget_structure"] = {
+                "required": False,
+                "structured": None,
+                "markdown": "",
+                "niveau_certitude": str(payload.get("niveau_certitude", "moyen")).strip(),
+                "justification_requirement": str(payload.get("justification_requirement", "")).strip(),
+            }
+        llm_parts_ok += 1
+        meta["parts"]["budget_structure"] = "llm"
+    else:
+        meta["parts"]["budget_structure"] = f"fallback:{wf4c_result.get('error', 'llm_error')}"
+
+    checklist = list(build_completion_checklist(wf3_analysis, wf2b_structured))
+    presentation_extra = wf4_outputs["livrables"]["presentation_projet"]
+    if isinstance(presentation_extra, dict):
+        for item in presentation_extra.get("donnees_manquantes", []):
+            checklist.append({"bloc": "presentation", "element": str(item), "action": "Completer cette information", "source": ""})
+        for item in presentation_extra.get("pieces_ou_annexes_a_prevoir", []):
+            checklist.append({"bloc": "pieces", "element": str(item), "action": "Prevoir cette piece ou annexe", "source": ""})
+
+    budget_project_structured = wf4_outputs["livrables"]["budget_projet"].get("structured", {})
+    for item in budget_project_structured.get("points_a_completer", []):
+        checklist.append({"bloc": "budget_projet", "element": str(item), "action": "Completer ou confirmer ce poste budgetaire", "source": ""})
+
+    budget_structure_payload = wf4_outputs["livrables"]["budget_structure"]
+    if isinstance(budget_structure_payload, dict):
+        structured = budget_structure_payload.get("structured", {}) or {}
+        for item in structured.get("points_a_completer", []):
+            checklist.append({"bloc": "budget_structure", "element": str(item), "action": "Completer ou confirmer ce poste structure", "source": ""})
+        justification = str(budget_structure_payload.get("justification_requirement", "")).strip()
+        if justification:
+            checklist.append({"bloc": "budget_structure", "element": "Justification du besoin", "action": justification, "source": ""})
+
+    deduped_checklist = []
+    seen = set()
+    for item in checklist:
+        key = (str(item.get("bloc", "")), str(item.get("element", "")), str(item.get("action", "")))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_checklist.append(item)
+    wf4_outputs["livrables"]["points_a_completer"] = deduped_checklist[:18]
+
+    if llm_parts_ok:
+        meta.update(
+            {
+                "engine": "llm_direct_python",
+                "provider": active_provider,
+                "model": active_model,
+                "fallback_used": llm_parts_ok < 3,
+                "wf4a_usage": wf4a_result.get("usage", {}),
+                "wf4b_usage": wf4b_result.get("usage", {}),
+                "wf4c_usage": wf4c_result.get("usage", {}),
+            }
+        )
+        return wf4_outputs, meta
+
+    meta.update(
+        {
+            "fallback_used": True,
+            "llm_error": "wf4_llm_inexploitable",
+            "provider": active_provider,
+            "model": active_model,
+            "wf4a_usage": wf4a_result.get("usage", {}),
+            "wf4b_usage": wf4b_result.get("usage", {}),
+            "wf4c_usage": wf4c_result.get("usage", {}),
+        }
+    )
+    return fallback_outputs, meta
+
+
 def resolve_pipeline_outputs(
     dossier_files,
     client_files,
@@ -316,7 +585,14 @@ def resolve_pipeline_outputs(
         llm_provider=llm_provider,
         llm_model=llm_model,
     )
-    wf4_outputs = build_wf4_outputs(completed_wf2b, wf3_analysis)
+    wf4_outputs, wf4_meta = resolve_wf4_outputs(
+        completed_wf2a,
+        completed_wf2b,
+        wf3_analysis,
+        prefer_llm=prefer_llm,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+    )
 
     return {
         "wf2a": completed_wf2a,
@@ -332,6 +608,7 @@ def resolve_pipeline_outputs(
             "wf2a": wf2a_meta,
             "wf2b": wf2b_meta,
             "wf3": wf3_meta,
+            "wf4": wf4_meta,
         },
         "bridge": build_bridge_from_wf2(completed_wf2a, completed_wf2b),
     }

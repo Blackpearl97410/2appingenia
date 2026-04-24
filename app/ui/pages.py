@@ -782,7 +782,8 @@ def render_wf4_section(
             "Moteurs actifs : "
             f"WF2a={execution_meta.get('wf2a', {}).get('engine', 'heuristique_locale')}, "
             f"WF2b={execution_meta.get('wf2b', {}).get('engine', 'heuristique_locale')}, "
-            f"WF3={execution_meta.get('wf3', {}).get('engine', 'heuristique_locale')}"
+            f"WF3={execution_meta.get('wf3', {}).get('engine', 'heuristique_locale')}, "
+            f"WF4={execution_meta.get('wf4', {}).get('engine', 'heuristique_locale')}"
         )
 
     rapport = wf4_outputs.get("rapport_structured", {})
@@ -914,6 +915,17 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
     budget_projet_structured = budget_projet.get("structured", {})
 
     st.markdown("## Resultat final")
+    wf4_engine = execution.get("wf4", {}).get("engine", "heuristique_locale")
+    wf4_provider = execution.get("wf4", {}).get("provider", "")
+    wf4_model = execution.get("wf4", {}).get("model", "")
+    if wf4_provider or wf4_model:
+        st.caption(
+            f"WF4 : `{wf4_engine}`"
+            + (f" · provider `{wf4_provider}`" if wf4_provider else "")
+            + (f" · modele `{wf4_model}`" if wf4_model else "")
+        )
+    else:
+        st.caption(f"WF4 : `{wf4_engine}`")
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Sections presentation", str(len(sections)))
