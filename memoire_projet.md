@@ -754,6 +754,20 @@ Etat de validation :
 - instanciation du client Mistral OK
 - appel API reel a faire quand une vraie `MISTRAL_API_KEY` sera ajoutee
 
+## Recentrage WF4 sur les livrables
+
+Le point important remonte par l'utilisateur a ete integre :
+- le livrable attendu n'est pas d'abord un rapport ou un score
+- le coeur de la valeur doit etre une **sortie exploitable de candidature**
+
+`WF4` a donc ete refondu pour produire en priorite :
+- une **trame de presentation du projet** en plusieurs sections
+- une **trame de budget previsionnel projet** avec colonnes charges / produits
+- un **budget de structure** seulement si l'appel semble le demander
+- une **checklist des points a completer**
+
+Le rapport analytique et les suggestions restent presents, mais passent en secondaire.
+
 ## Fichiers importants a relire si besoin
 
 - `/Users/alexandrepaviel/Desktop/OF/application AAP ingénia/streamlit_app.py` — 53 lignes, routeur pur

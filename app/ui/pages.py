@@ -731,7 +731,7 @@ def render_wf4_section(
     global_bridge: dict[str, str] | None = None,
     pipeline_outputs: dict[str, object] | None = None,
 ) -> None:
-    st.subheader("WF4 local - Rapport, pre-remplissage et suggestions")
+    st.subheader("WF4 local - Livrables de candidature")
 
     if not dossier_files or not client_files or not project_files:
         st.info("Le WF4 local demande un dossier, un client et un projet pour generer des sorties utiles.")
@@ -781,50 +781,113 @@ def render_wf4_section(
     rapport = wf4_outputs.get("rapport_structured", {})
     preremplissage = list(wf4_outputs.get("champs_preremplissage", []))
     suggestions = list(wf4_outputs.get("suggestions", []))
-    report_markdown = str(wf4_outputs.get("rapport_markdown", ""))
+    livrables = wf4_outputs.get("livrables", {})
+    presentation = livrables.get("presentation_projet", {})
+    budget_projet = livrables.get("budget_projet", {})
+    budget_structure = livrables.get("budget_structure", {})
+    checklist = list(livrables.get("points_a_completer", []))
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("Type rapport", str(rapport.get("type_rapport", "complet")))
-    col2.metric("Format", str(rapport.get("format_export", "markdown")))
-    col3.metric("Suggestions", str(len(suggestions)))
+    col1.metric("Statut dossier", str(rapport.get("statut_eligibilite", "a confirmer")))
+    col2.metric("Sections presentation", str(len(presentation.get("sections", []))))
+    col3.metric("Points a completer", str(len(checklist)))
 
-    st.markdown("### Rapport structure")
-    render_metadata({
-        "Statut": str(rapport.get("statut_eligibilite", "a confirmer")),
-        "Score global": f"{rapport.get('score_global', 0)}/100",
-        "Niveau de confiance": str(rapport.get("niveau_confiance", "moyen")),
-        "Points valides": str(len(rapport.get("points_valides", []))),
-        "Points a confirmer": str(len(rapport.get("points_a_confirmer", []))),
-        "Points bloquants": str(len(rapport.get("points_bloquants", []))),
-    })
-    st.write(str(rapport.get("resume_executif", "Aucun resume.")))
-
-    with st.expander("Voir le rapport markdown", expanded=False):
-        st.text_area("Rapport markdown", report_markdown, height=320)
+    st.markdown("### 1. Document de presentation du projet")
+    sections = list(presentation.get("sections", []))
+    if sections:
+        for section in sections:
+            with st.expander(f"{section.get('section', 'Section')} · {section.get('statut', 'a_completer')}", expanded=False):
+                st.write(section.get("contenu", ""))
         st.download_button(
-            "Telecharger le rapport markdown",
-            data=report_markdown,
-            file_name="rapport_wf4_local.md",
+            "Telecharger la trame de presentation",
+            data=str(presentation.get("markdown", "")),
+            file_name="presentation_projet.md",
             mime="text/markdown",
-            key="download_wf4_markdown",
+            key="download_presentation_projet",
         )
-
-    st.markdown("### Champs de pre-remplissage")
-    if preremplissage:
-        st.dataframe(preremplissage, use_container_width=True)
     else:
-        st.info("Aucun champ de pre-remplissage disponible.")
+        st.info("Aucune trame de presentation disponible.")
 
-    st.markdown("### Suggestions alternatives")
-    if suggestions:
-        for index, suggestion in enumerate(suggestions, start=1):
-            st.markdown(
-                f"**{index}. {suggestion.get('nom', 'Suggestion')}**  \n"
-                f"Pertinence : `{suggestion.get('score_pertinence', 0)}/100`  \n"
-                f"Justification : {suggestion.get('justification', 'Aucune justification')}"
-            )
+    st.markdown("### 2. Budget previsionnel du projet")
+    project_budget_structured = budget_projet.get("structured", {})
+    if project_budget_structured:
+        budget_rows = []
+        charges = list(project_budget_structured.get("charges", []))
+        produits = list(project_budget_structured.get("produits", []))
+        max_len = max(len(charges), len(produits))
+        for index in range(max_len):
+            charge = charges[index] if index < len(charges) else {"poste": "", "montant_previsionnel": ""}
+            produit = produits[index] if index < len(produits) else {"poste": "", "montant_previsionnel": ""}
+            budget_rows.append({
+                "Charges": charge.get("poste", ""),
+                "Montant charges": charge.get("montant_previsionnel", ""),
+                "Produits": produit.get("poste", ""),
+                "Montant produits": produit.get("montant_previsionnel", ""),
+            })
+        st.dataframe(budget_rows, use_container_width=True)
+        for note in project_budget_structured.get("notes", []):
+            st.write(f"- {note}")
+        st.download_button(
+            "Telecharger la trame budget projet",
+            data=str(budget_projet.get("markdown", "")),
+            file_name="budget_projet.md",
+            mime="text/markdown",
+            key="download_budget_projet",
+        )
     else:
-        st.info("Aucune suggestion alternative locale n'a ete detectee pour l'instant.")
+        st.info("Aucune trame budget projet disponible.")
+
+    st.markdown("### 3. Budget previsionnel de structure")
+    if budget_structure.get("required") and budget_structure.get("structured"):
+        structure_rows = []
+        charges = list(budget_structure["structured"].get("charges", []))
+        produits = list(budget_structure["structured"].get("produits", []))
+        max_len = max(len(charges), len(produits))
+        for index in range(max_len):
+            charge = charges[index] if index < len(charges) else {"poste": "", "montant_previsionnel": ""}
+            produit = produits[index] if index < len(produits) else {"poste": "", "montant_previsionnel": ""}
+            structure_rows.append({
+                "Charges structure": charge.get("poste", ""),
+                "Montant charges": charge.get("montant_previsionnel", ""),
+                "Produits structure": produit.get("poste", ""),
+                "Montant produits": produit.get("montant_previsionnel", ""),
+            })
+        st.dataframe(structure_rows, use_container_width=True)
+        for note in budget_structure["structured"].get("notes", []):
+            st.write(f"- {note}")
+        st.download_button(
+            "Telecharger la trame budget structure",
+            data=str(budget_structure.get("markdown", "")),
+            file_name="budget_structure.md",
+            mime="text/markdown",
+            key="download_budget_structure",
+        )
+    else:
+        st.info("Pas de budget structure requis detecte pour l'instant.")
+
+    st.markdown("### 4. Points a completer")
+    if checklist:
+        st.dataframe(checklist, use_container_width=True)
+    else:
+        st.info("Aucun point de completion remonte.")
+
+    with st.expander("Elements secondaires", expanded=False):
+        st.markdown("#### Champs de pre-remplissage")
+        if preremplissage:
+            st.dataframe(preremplissage, use_container_width=True)
+        else:
+            st.info("Aucun champ de pre-remplissage disponible.")
+
+        st.markdown("#### Suggestions alternatives")
+        if suggestions:
+            for index, suggestion in enumerate(suggestions, start=1):
+                st.markdown(
+                    f"**{index}. {suggestion.get('nom', 'Suggestion')}**  \n"
+                    f"Pertinence : `{suggestion.get('score_pertinence', 0)}/100`  \n"
+                    f"Justification : {suggestion.get('justification', 'Aucune justification')}"
+                )
+        else:
+            st.info("Aucune suggestion alternative locale n'a ete detectee pour l'instant.")
 
 
 def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
@@ -832,9 +895,12 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
     wf3 = pipeline_outputs.get("wf3", {})
     wf4 = pipeline_outputs.get("wf4", {})
     rapport = wf4.get("rapport_structured", {})
-    preremplissage = list(wf4.get("champs_preremplissage", []))
-    suggestions = list(wf4.get("suggestions", []))
-    report_markdown = str(wf4.get("rapport_markdown", ""))
+    livrables = wf4.get("livrables", {})
+    presentation = livrables.get("presentation_projet", {})
+    budget_projet = livrables.get("budget_projet", {})
+    budget_structure = livrables.get("budget_structure", {})
+    checklist = list(livrables.get("points_a_completer", []))
+    report_markdown = str(presentation.get("markdown", "") or wf4.get("rapport_markdown", ""))
 
     st.markdown("## Resultat final")
 
@@ -882,17 +948,17 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
         else:
             st.write("- Aucune action urgente")
 
-    st.markdown("### Sorties WF4")
+    st.markdown("### Livrables generes")
     out1, out2, out3 = st.columns(3)
-    out1.metric("Champs pre-remplis", str(len(preremplissage)))
-    out2.metric("Suggestions", str(len(suggestions)))
-    out3.metric("Confiance", str(wf3.get("niveau_confiance", "moyen")))
+    out1.metric("Sections presentation", str(len(presentation.get("sections", []))))
+    out2.metric("Budget structure", "oui" if budget_structure.get("required") else "non")
+    out3.metric("Points a completer", str(len(checklist)))
 
     dl1, dl2 = st.columns(2)
     dl1.download_button(
-        "Telecharger le rapport markdown",
+        "Telecharger la presentation projet",
         data=report_markdown,
-        file_name="rapport_final.md",
+        file_name="presentation_projet.md",
         mime="text/markdown",
         key="download_final_markdown",
     )
