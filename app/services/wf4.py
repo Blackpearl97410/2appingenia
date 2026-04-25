@@ -65,6 +65,37 @@ def _infer_call_requirements(wf3_analysis: dict[str, object]) -> dict[str, Any]:
     }
 
 
+def _collect_budget_signals(wf3_analysis: dict[str, object]) -> dict[str, list[str]]:
+    results = list(wf3_analysis.get("resultats_criteres", []))
+    budget_related = []
+    budget_actions = []
+    required_pieces = []
+    for result in results:
+        label = str(result.get("libelle", "")).strip()
+        action = str(result.get("action_requise", "")).strip()
+        justification = str(result.get("justification", "")).strip()
+        combined = f"{label} {action} {justification}".lower()
+        if any(keyword in combined for keyword in {"budget", "financement", "cofinancement", "autofinancement", "devis", "plan de financement"}):
+            if label:
+                budget_related.append(label)
+            if action:
+                budget_actions.append(action)
+        if any(keyword in combined for keyword in {"piece", "pièce", "devis", "annexe", "justificatif"}):
+            if label:
+                required_pieces.append(label)
+            if action:
+                required_pieces.append(action)
+    return {
+        "budget_related": _dedup(budget_related),
+        "budget_actions": _dedup(budget_actions),
+        "required_pieces": _dedup(required_pieces),
+    }
+
+
+def _build_budget_comment(*parts: str) -> str:
+    return " | ".join(part.strip() for part in parts if str(part).strip())
+
+
 def build_report_structured(wf3_analysis: dict[str, object]) -> dict[str, object]:
     results = list(wf3_analysis.get("resultats_criteres", []))
     valid_items = _collect_items_by_status(results, {"valide"})
@@ -403,32 +434,102 @@ def build_project_budget_template(wf2b_structured: dict[str, object], wf3_analys
     cofinancements = _join_field_values(donnees_projet.get("cofinancements", []), default="")
     actions = _join_field_values(donnees_projet.get("actions_prevues", []), default="")
     moyens = _join_field_values(donnees_projet.get("moyens_humains_techniques", []), default="")
+    publics = _join_field_values(donnees_projet.get("publics_cibles", []), default="")
+    livrables = _join_field_values(donnees_projet.get("livrables_prevus", []), default="")
     requirements = _infer_call_requirements(wf3_analysis)
+    budget_signals = _collect_budget_signals(wf3_analysis)
+    action_items = _split_joined_values(actions)
+    means_items = _split_joined_values(moyens)
+    cofinancement_items = _split_joined_values(cofinancements)
 
     charges = [
-        {"poste": "Ressources humaines affectees au projet", "montant_previsionnel": "", "commentaire": moyens or "A completer"},
-        {"poste": "Prestations externes / intervenants", "montant_previsionnel": "", "commentaire": actions or "A completer"},
-        {"poste": "Materiel et equipements techniques", "montant_previsionnel": "", "commentaire": moyens or "A completer"},
-        {"poste": "Communication, diffusion et valorisation", "montant_previsionnel": "", "commentaire": "A completer"},
-        {"poste": "Deplacements, missions et logistique", "montant_previsionnel": "", "commentaire": "A completer"},
-        {"poste": "Evaluation, suivi et coordination", "montant_previsionnel": "", "commentaire": "A completer"},
-        {"poste": "Frais administratifs lies au projet", "montant_previsionnel": "", "commentaire": "A completer"},
+        {
+            "poste": "1.1 Coordination, administration et gestion du projet",
+            "montant_previsionnel": "",
+            "commentaire": _build_budget_comment(means_items[0] if means_items else "", "Temps de coordination, gestion, suivi administratif"),
+        },
+        {
+            "poste": "1.2 Ressources humaines artistiques, techniques ou pedagogiques",
+            "montant_previsionnel": "",
+            "commentaire": _build_budget_comment(action_items[0] if action_items else "", "Intervenants, artistes, techniciens, formateurs"),
+        },
+        {
+            "poste": "1.3 Prestations externes et sous-traitance",
+            "montant_previsionnel": "",
+            "commentaire": _build_budget_comment(action_items[1] if len(action_items) > 1 else "", "A documenter avec devis si requis"),
+        },
+        {
+            "poste": "1.4 Materiel, equipements et outils techniques",
+            "montant_previsionnel": "",
+            "commentaire": _build_budget_comment(means_items[1] if len(means_items) > 1 else "", "Achats ou locations techniques lies au projet"),
+        },
+        {
+            "poste": "1.5 Communication, diffusion et valorisation",
+            "montant_previsionnel": "",
+            "commentaire": _build_budget_comment(publics if publics != "A completer" else "", "Supports, diffusion, mediation, mobilisation des publics"),
+        },
+        {
+            "poste": "1.6 Deplacements, missions, logistique et accueil",
+            "montant_previsionnel": "",
+            "commentaire": "Transports, repas, hebergement, locations ponctuelles, accueil publics/intervenants",
+        },
+        {
+            "poste": "1.7 Evaluation, suivi, livrables et restitution",
+            "montant_previsionnel": "",
+            "commentaire": _build_budget_comment(livrables if livrables != "A completer" else "", "Evaluation, bilan, captation, restitution, reporting"),
+        },
+        {
+            "poste": "1.8 Frais indirects ou administratifs imputes au projet",
+            "montant_previsionnel": "",
+            "commentaire": "Verifier si les frais de structure sont autorises ou plafonnes par l'appel",
+        },
     ]
     produits = [
-        {"poste": "Subvention sollicitee", "montant_previsionnel": amount if amount != "A completer" else "", "commentaire": "Verifier si ce montant correspond bien a l'aide demandee"},
-        {"poste": "Autofinancement", "montant_previsionnel": "", "commentaire": cofinancements or "A completer"},
-        {"poste": "Autres subventions publiques", "montant_previsionnel": "", "commentaire": cofinancements or "A completer"},
-        {"poste": "Partenariats / financements prives", "montant_previsionnel": "", "commentaire": cofinancements or "A completer"},
-        {"poste": "Recettes propres du projet", "montant_previsionnel": "", "commentaire": "A completer"},
-        {"poste": "Autres produits", "montant_previsionnel": "", "commentaire": "A completer"},
+        {
+            "poste": "2.1 Subvention sollicitee au titre de l'appel",
+            "montant_previsionnel": amount if amount != "A completer" else "",
+            "commentaire": "Verifier que ce montant correspond bien a la subvention demandee et non au budget global",
+        },
+        {
+            "poste": "2.2 Autofinancement / apport de la structure",
+            "montant_previsionnel": "",
+            "commentaire": cofinancement_items[0] if cofinancement_items else "Verifier le niveau minimum d'autofinancement requis",
+        },
+        {
+            "poste": "2.3 Cofinancements publics",
+            "montant_previsionnel": "",
+            "commentaire": cofinancement_items[1] if len(cofinancement_items) > 1 else cofinancements or "A completer",
+        },
+        {
+            "poste": "2.4 Partenariats prives, mecenat ou sponsoring",
+            "montant_previsionnel": "",
+            "commentaire": cofinancement_items[2] if len(cofinancement_items) > 2 else "A completer",
+        },
+        {
+            "poste": "2.5 Recettes propres du projet",
+            "montant_previsionnel": "",
+            "commentaire": "Billetterie, ventes, inscriptions, prestations, contribution des beneficiaires si pertinent",
+        },
+        {
+            "poste": "2.6 Autres produits affectes au projet",
+            "montant_previsionnel": "",
+            "commentaire": "Autres concours ou valorisations a confirmer",
+        },
     ]
 
     notes = [
         "Trame budgetaire a reprendre dans le format comptable demande par l'appel a projet.",
         "Verifier l'equilibre Charges = Produits.",
+        "Verifier que la subvention sollicitee, l'autofinancement et les autres financements sont distingues clairement.",
     ]
     if requirements["budget_required"]:
         notes.append("L'appel a projet mentionne des attentes budgetaires explicites.")
+    if budget_signals["budget_related"]:
+        notes.append("Contraintes ou attentes budgetaires detectees : " + " | ".join(budget_signals["budget_related"][:6]))
+    if budget_signals["budget_actions"]:
+        notes.append("Actions budgetaires a traiter : " + " | ".join(budget_signals["budget_actions"][:6]))
+    if budget_signals["required_pieces"]:
+        notes.append("Pieces / justificatifs budgetaires a verifier : " + " | ".join(budget_signals["required_pieces"][:6]))
 
     return {
         "titre": "Budget previsionnel du projet",
@@ -469,25 +570,33 @@ def build_structure_budget_template(wf2b_structured: dict[str, object], wf3_anal
     if not requirements["structure_budget_required"]:
         return None
 
+    profil_client = wf2b_structured.get("profil_client", {})
+    capacities = _join_field_values(profil_client.get("capacites_porteuses", []), default="")
+    activities = _join_field_values(profil_client.get("activites", []), default="")
+    budget_signals = _collect_budget_signals(wf3_analysis)
+
     return {
         "titre": "Budget previsionnel de structure",
         "colonnes": ["Charges de structure", "Montant previsionnel", "Produits de structure", "Montant previsionnel"],
         "charges": [
-            {"poste": "Personnel permanent", "montant_previsionnel": "", "commentaire": "A completer"},
-            {"poste": "Charges sociales", "montant_previsionnel": "", "commentaire": "A completer"},
-            {"poste": "Loyers / fluides / assurances", "montant_previsionnel": "", "commentaire": "A completer"},
-            {"poste": "Fonctionnement general", "montant_previsionnel": "", "commentaire": "A completer"},
-            {"poste": "Autres charges de structure", "montant_previsionnel": "", "commentaire": "A completer"},
+            {"poste": "1.1 Personnel permanent et encadrement", "montant_previsionnel": "", "commentaire": capacities or "A completer"},
+            {"poste": "1.2 Charges sociales et taxes liees a l'emploi", "montant_previsionnel": "", "commentaire": "A completer"},
+            {"poste": "1.3 Loyers, fluides, assurances et frais fixes", "montant_previsionnel": "", "commentaire": "A completer"},
+            {"poste": "1.4 Fonctionnement courant et maintenance", "montant_previsionnel": "", "commentaire": activities or "A completer"},
+            {"poste": "1.5 Equipements, amortissements ou renouvellements", "montant_previsionnel": "", "commentaire": capacities or "A completer"},
+            {"poste": "1.6 Autres charges de structure", "montant_previsionnel": "", "commentaire": "A completer"},
         ],
         "produits": [
-            {"poste": "Subventions de fonctionnement", "montant_previsionnel": "", "commentaire": "A completer"},
-            {"poste": "Recettes propres", "montant_previsionnel": "", "commentaire": "A completer"},
-            {"poste": "Prestations / ventes", "montant_previsionnel": "", "commentaire": "A completer"},
-            {"poste": "Autres produits", "montant_previsionnel": "", "commentaire": "A completer"},
+            {"poste": "2.1 Subventions de fonctionnement", "montant_previsionnel": "", "commentaire": "A completer"},
+            {"poste": "2.2 Recettes propres et cotisations", "montant_previsionnel": "", "commentaire": "A completer"},
+            {"poste": "2.3 Prestations, ventes ou productions", "montant_previsionnel": "", "commentaire": activities or "A completer"},
+            {"poste": "2.4 Partenariats, mecenat ou apports prives", "montant_previsionnel": "", "commentaire": "A completer"},
+            {"poste": "2.5 Autres produits de structure", "montant_previsionnel": "", "commentaire": "A completer"},
         ],
         "notes": [
             "A produire seulement si le financeur demande un budget de structure ou un previsionnel de la structure porteuse.",
             "Verifier la coherence entre budget projet et budget structure.",
+            "Dissocier clairement les charges / produits de structure de ceux du projet finance.",
         ],
     }
 

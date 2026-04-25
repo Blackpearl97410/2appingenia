@@ -128,6 +128,27 @@ def save_editable_wf4(signature: str, wf4: dict[str, object]) -> None:
     st.session_state["editable_wf4"] = deepcopy(wf4)
 
 
+def _budget_to_dataframe(structured_budget: dict[str, object]) -> pd.DataFrame:
+    charges = list(structured_budget.get("charges", []))
+    produits = list(structured_budget.get("produits", []))
+    max_len = max(len(charges), len(produits)) if (charges or produits) else 0
+    rows = []
+    for index in range(max_len):
+        charge = charges[index] if index < len(charges) else {}
+        produit = produits[index] if index < len(produits) else {}
+        rows.append(
+            {
+                "Charges": charge.get("poste", ""),
+                "Montant charges": charge.get("montant_previsionnel", ""),
+                "Commentaire charges": charge.get("commentaire", ""),
+                "Produits": produit.get("poste", ""),
+                "Montant produits": produit.get("montant_previsionnel", ""),
+                "Commentaire produits": produit.get("commentaire", ""),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 # ── Shared display helpers ────────────────────────────────────────────────────
 
 def render_metadata(metadata: dict[str, str], title: str = "Metadonnees detectees") -> None:
@@ -1067,15 +1088,25 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
                 st.markdown("#### Notes budgetaires")
                 for note in notes:
                     st.write(f"- {note}")
+            budget_project_csv = _budget_to_dataframe(budget_projet_structured).to_csv(index=False)
         else:
             st.info("Aucune trame budget projet n'a ete produite.")
+            budget_project_csv = ""
         budget_projet_markdown = str(budget_projet.get("markdown", ""))
-        st.download_button(
+        download_col1, download_col2 = st.columns(2)
+        download_col1.download_button(
             "Telecharger la trame budget projet",
             data=budget_projet_markdown,
             file_name="budget_projet.md",
             mime="text/markdown",
             key="download_final_budget_projet",
+        )
+        download_col2.download_button(
+            "Telecharger le budget projet en CSV",
+            data=budget_project_csv,
+            file_name="budget_projet.csv",
+            mime="text/csv",
+            key="download_final_budget_projet_csv",
         )
 
     with liv_tab_3:
@@ -1108,13 +1139,29 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
                 budget_structure["structured"] = structure_structured
                 budget_structure["markdown"] = build_project_budget_markdown(structure_structured)
                 budget_structure_markdown = str(budget_structure.get("markdown", ""))
+                structure_notes = list(structure_structured.get("notes", []))
+                if structure_notes:
+                    st.markdown("#### Notes budget structure")
+                    for note in structure_notes:
+                        st.write(f"- {note}")
+                structure_csv = _budget_to_dataframe(structure_structured).to_csv(index=False)
+            else:
+                structure_csv = ""
             if budget_structure_markdown:
-                st.download_button(
+                structure_dl_col1, structure_dl_col2 = st.columns(2)
+                structure_dl_col1.download_button(
                     "Telecharger la trame budget structure",
                     data=budget_structure_markdown,
                     file_name="budget_structure.md",
                     mime="text/markdown",
                     key="download_final_budget_structure",
+                )
+                structure_dl_col2.download_button(
+                    "Telecharger le budget structure en CSV",
+                    data=structure_csv,
+                    file_name="budget_structure.csv",
+                    mime="text/csv",
+                    key="download_final_budget_structure_csv",
                 )
         else:
             st.info("Aucun budget de structure requis n'a ete detecte.")

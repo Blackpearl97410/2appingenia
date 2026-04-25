@@ -880,3 +880,38 @@ Effet produit :
 - l'utilisateur n'est plus bloque avec un livrable passif
 - il peut corriger, densifier, ajuster et exporter dans la meme session
 - cela rapproche l'application d'un vrai back-office de pre-production de dossier
+
+## Budget projet / structure renforces
+
+Le budget a franchi un cap de lisibilite et d'exploitabilite.
+
+Ce qui a ete renforce :
+- la trame `budget projet` est plus proche d'un format financeur :
+  - coordination / gestion
+  - ressources humaines artistiques ou techniques
+  - prestations externes
+  - materiel / equipements
+  - communication / diffusion
+  - deplacements / logistique
+  - evaluation / restitution
+  - frais indirects
+- la trame `produits` distingue mieux :
+  - subvention sollicitee
+  - autofinancement
+  - cofinancements publics
+  - partenariats prives
+  - recettes propres
+  - autres produits
+- les **notes budgetaires** recuperent maintenant les signaux detectes dans `WF3`
+- le `budget structure` est plus credible quand il est requis
+
+Ameliorations UI :
+- affichage plus utile des notes budgetaires
+- export `CSV` ajoute pour :
+  - budget projet
+  - budget structure
+
+Effet produit :
+- les livrables budgetaires sont moins generiques
+- ils sont plus faciles a reprendre dans Excel ou dans une trame financeur
+- on se rapproche d'un vrai support de travail pour montage de dossier
