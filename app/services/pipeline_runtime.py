@@ -26,6 +26,7 @@ from app.services.wf4 import (
 )
 from app.services.wf4_llm import (
     request_wf4a_llm_payload,
+    request_wf4a_section_payload,
     request_wf4b_llm_payload,
     request_wf4c_llm_payload,
 )
@@ -355,6 +356,55 @@ def _normalize_presentation_payload(payload: dict[str, object], fallback_outputs
     }
 
 
+def _normalize_single_presentation_section(payload: dict[str, object], fallback_section: dict[str, object]) -> dict[str, object]:
+    payload = payload if isinstance(payload, dict) else {}
+    titre = str(payload.get("titre", "")).strip() or str(fallback_section.get("section", "")).strip() or "Section"
+    objectif = str(payload.get("objectif_section", "")).strip() or titre
+    contenu = str(payload.get("contenu_redige", "")).strip() or str(fallback_section.get("contenu", "")).strip()
+    statut = str(payload.get("statut", "")).strip().lower()
+    if statut not in {"redige", "partiel", "a_completer", "a_confirmer"}:
+        statut = str(fallback_section.get("statut", "partiel")).strip().lower() or "partiel"
+    sources = _dedup_strings([str(item) for item in payload.get("sources_utilisees", [])])
+    vigilances = _dedup_strings([str(item) for item in payload.get("points_de_vigilance", [])])
+    content_parts = []
+    if objectif:
+        content_parts.append(f"Objectif : {objectif}")
+    if contenu:
+        content_parts.append(contenu)
+    if vigilances:
+        content_parts.append("Points de vigilance : " + " | ".join(vigilances))
+    if sources:
+        content_parts.append("Sources : " + " | ".join(sources))
+    return {
+        "section": titre,
+        "statut": statut,
+        "contenu": "\n\n".join(content_parts).strip() or str(fallback_section.get("contenu", "")).strip(),
+    }
+
+
+def _should_enrich_presentation_section(section: dict[str, object], enriched_count: int) -> bool:
+    if enriched_count >= 5:
+        return False
+    title = str(section.get("section", "")).strip().lower()
+    content = str(section.get("contenu", "")).strip()
+    status = str(section.get("statut", "")).strip().lower()
+    strategic_keywords = (
+        "resume",
+        "contexte",
+        "description",
+        "public",
+        "methodologie",
+        "mise en oeuvre",
+        "moyens",
+        "partenariat",
+        "budget",
+        "plan de financement",
+    )
+    if not any(keyword in title for keyword in strategic_keywords):
+        return False
+    return len(content) < 1200 or status in {"partiel", "a_completer", "a_confirmer"}
+
+
 def _normalize_budget_rows(items: object) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     if not isinstance(items, list):
@@ -442,6 +492,60 @@ def resolve_wf4_outputs(
         meta["parts"]["presentation_projet"] = "llm"
     else:
         meta["parts"]["presentation_projet"] = f"fallback:{wf4a_result.get('error', 'llm_error')}"
+
+    presentation_payload = wf4_outputs["livrables"].get("presentation_projet", {})
+    section_results = []
+    if isinstance(presentation_payload, dict):
+        current_sections = list(presentation_payload.get("sections", []))
+        enriched_sections = []
+        llm_section_attempts = 0
+        for index, section in enumerate(current_sections):
+            if not isinstance(section, dict):
+                enriched_sections.append(section)
+                continue
+            if index >= 10:
+                enriched_sections.append(section)
+                continue
+            section_body = str(section.get("contenu", "")).strip()
+            if not _should_enrich_presentation_section(section, llm_section_attempts):
+                enriched_sections.append(section)
+                continue
+
+            section_request = {
+                "titre": str(section.get("section", "")).strip(),
+                "objectif_section": str(section.get("section", "")).strip(),
+                "contenu_initial": section_body,
+                "statut_initial": str(section.get("statut", "")).strip().lower(),
+            }
+            llm_section_attempts += 1
+            section_result = request_wf4a_section_payload(
+                wf2a_structured,
+                wf2b_structured,
+                wf3_analysis,
+                section_request,
+                provider_override=llm_provider,
+                model_override=llm_model,
+            )
+            section_results.append(section_result)
+            if section_result.get("ok") and isinstance(section_result.get("payload"), dict):
+                enriched_sections.append(_normalize_single_presentation_section(section_result["payload"], section))
+            else:
+                enriched_sections.append(section)
+
+        if enriched_sections:
+            presentation_payload["sections"] = enriched_sections
+            presentation_payload["markdown"] = build_project_presentation_markdown(enriched_sections)
+            llm_section_count = sum(
+                1 for result in section_results if result.get("ok") and isinstance(result.get("payload"), dict)
+            )
+            if llm_section_count:
+                meta["parts"]["presentation_sections"] = f"llm:{llm_section_count}/{len(section_results)}"
+            elif section_results:
+                first_error = next(
+                    (str(result.get("error", "llm_error")) for result in section_results if not result.get("ok")),
+                    "llm_error",
+                )
+                meta["parts"]["presentation_sections"] = f"fallback:{first_error}"
 
     wf4b_result = request_wf4b_llm_payload(
         wf2a_structured,

@@ -367,11 +367,11 @@ Retourne uniquement un JSON valide :
 """.strip()
 
 
-def _build_wf4_payload(
+def _build_wf4_payload_dict(
     wf2a_structured: dict[str, object],
     wf2b_structured: dict[str, object],
     wf3_analysis: dict[str, object],
-) -> str:
+) -> dict[str, object]:
     criteres = [
         {
             "libelle": str(item.get("libelle", "")).strip(),
@@ -397,22 +397,97 @@ def _build_wf4_payload(
         [entry["source_document"] for entry in criteres + structure_sources + projet_sources if entry.get("source_document")]
     )
 
-    return json.dumps(
-        {
-            "wf2a": wf2a_structured,
-            "wf2b": wf2b_structured,
-            "wf3": wf3_analysis,
-            "matiere_source": {
-                "documents_sources": source_documents,
-                "criteres_explicites": criteres,
-                "structure_porteuse": structure_sources,
-                "projet": projet_sources,
-                "actions_critiques": critical_actions,
-            },
+    return {
+        "wf2a": wf2a_structured,
+        "wf2b": wf2b_structured,
+        "wf3": wf3_analysis,
+        "matiere_source": {
+            "documents_sources": source_documents,
+            "criteres_explicites": criteres,
+            "structure_porteuse": structure_sources,
+            "projet": projet_sources,
+            "actions_critiques": critical_actions,
         },
+    }
+
+
+def _build_wf4_payload(
+    wf2a_structured: dict[str, object],
+    wf2b_structured: dict[str, object],
+    wf3_analysis: dict[str, object],
+) -> str:
+    return json.dumps(
+        _build_wf4_payload_dict(wf2a_structured, wf2b_structured, wf3_analysis),
         ensure_ascii=False,
         indent=2,
     )
+
+
+WF4A_SECTION_SYSTEM_PROMPT = """
+Rôle
+Tu es un rédacteur senior en ingénierie de projets et financement public, spécialisé dans la rédaction de sections détaillées de dossiers de candidature à partir de matières documentaires déjà extraites.
+
+Objectif
+Rédiger une seule section de document de candidature, de manière plus développée, plus exploitable et plus précise qu'un simple résumé analytique. La section doit pouvoir être insérée telle quelle dans un document de présentation de projet.
+
+Contexte
+Tu reçois :
+- le contexte global déjà extrait du dossier, du client et du projet
+- une section cible avec son titre, son objectif, son contenu initial et son statut
+- des attendus de l'appel à projet
+
+Tu dois améliorer cette section sans inventer d'information. Si certaines données manquent, tu dois le signaler explicitement dans le texte avec `A_COMPLETER` ou `A_CONFIRMER`.
+
+Base de données et sources
+Tu t'appuies uniquement sur :
+- `wf2a`
+- `wf2b`
+- `wf3`
+- `matiere_source`
+- `section_cible`
+
+Tu privilégies les données internes fournies. Aucune recherche externe n'est autorisée dans cette tâche.
+
+Processus de travail
+1. Lire le titre et l'objectif de la section cible.
+2. Identifier dans les données sources les éléments réellement pertinents pour cette section.
+3. Réécrire la section sous forme d'un texte dense, fluide et exploitable.
+4. Intégrer explicitement les données disponibles : objectifs, actions, publics, territoire, calendrier, moyens, partenaires, livrables, budget, contraintes, selon la section.
+5. Si une information importante manque, l'indiquer proprement dans le texte.
+6. Retourner une sortie courte mais substantielle : au moins un vrai paragraphe développé, voire plusieurs si la matière le permet.
+
+Itération des données
+Avant de rédiger :
+- supprimer les doublons
+- normaliser les formulations
+- ne pas répéter mot pour mot le contenu initial
+- conserver uniquement les éléments utiles à la section cible
+- si une donnée est contradictoire, utiliser `A_CONFIRMER`
+
+Recherche croisée
+Pas de recherche croisée externe.
+
+Questionnement préalable
+Ne pose aucune question interactive. Si quelque chose manque, signale-le dans `points_de_vigilance` et dans le corps du texte.
+
+Contraintes / garde-fous
+- Ne fais aucune invention.
+- N'utilise pas de phrases métacommentaires du type `A transformer`, `A retravailler`, `Resume initial`.
+- Le texte doit ressembler à un brouillon de dossier, pas à une note interne.
+- Garde un style professionnel, clair, rédigé et directement exploitable.
+- Si la matière est riche, vise 8 à 12 phrases.
+- Réponds uniquement avec du JSON brut.
+
+Format de sortie attendu
+{
+  "titre": "string",
+  "objectif_section": "string",
+  "contenu_redige": "string",
+  "statut": "redige|partiel|a_completer|a_confirmer",
+  "sources_utilisees": ["string"],
+  "points_de_vigilance": ["string"]
+}
+""".strip()
 
 
 def request_wf4a_llm_payload(
@@ -498,6 +573,46 @@ def request_wf4c_llm_payload(
         WF4C_SYSTEM_PROMPT,
         _build_wf4_payload(wf2a_structured, wf2b_structured, wf3_analysis),
         max_tokens=3500,
+        provider_override=provider_override,
+        model_override=model_override,
+    )
+    if not llm_result.get("ok"):
+        return {
+            "ok": False,
+            "error": llm_result.get("error", "llm_error"),
+            "payload": None,
+            "usage": llm_result.get("usage", {}),
+            "provider": llm_result.get("provider", ""),
+            "model": llm_result.get("model", ""),
+        }
+
+    parsed_payload, parse_error = parse_json_response(str(llm_result.get("text", "")))
+    return {
+        "ok": parse_error is None and parsed_payload is not None,
+        "error": parse_error,
+        "payload": parsed_payload,
+        "usage": llm_result.get("usage", {}),
+        "provider": llm_result.get("provider", ""),
+        "model": llm_result.get("model", ""),
+        "raw_text": llm_result.get("text", ""),
+    }
+
+
+def request_wf4a_section_payload(
+    wf2a_structured: dict[str, object],
+    wf2b_structured: dict[str, object],
+    wf3_analysis: dict[str, object],
+    section_payload: dict[str, object],
+    provider_override: str | None = None,
+    model_override: str | None = None,
+) -> dict[str, object]:
+    payload = _build_wf4_payload_dict(wf2a_structured, wf2b_structured, wf3_analysis)
+    payload["section_cible"] = section_payload
+
+    llm_result = call_llm_message(
+        WF4A_SECTION_SYSTEM_PROMPT,
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        max_tokens=2200,
         provider_override=provider_override,
         model_override=model_override,
     )

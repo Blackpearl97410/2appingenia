@@ -822,3 +822,38 @@ Point de vigilance restant :
 - la qualite finale depend encore fortement de `WF2/WF3`
 - les budgets restent des trames assistees, pas des budgets comptables finaux
 - il faudra encore affiner le ton et la granularite des sections selon les types d'appel
+
+## WF4A section par section
+
+Nouvelle evolution majeure :
+- `WF4A` ne depend plus seulement d'un unique prompt global pour la presentation projet
+- le runtime relance maintenant un **enrichissement section par section** sur les parties les plus strategiques du document
+
+Concretement :
+- nouveau prompt systeme `WF4A_SECTION_SYSTEM_PROMPT` dans `/Users/alexandrepaviel/Desktop/OF/application AAP ingénia/app/services/wf4_llm.py`
+- nouvelle fonction `request_wf4a_section_payload(...)`
+- integration dans `/Users/alexandrepaviel/Desktop/OF/application AAP ingénia/app/services/pipeline_runtime.py`
+
+Logique retenue :
+- on garde le prompt global `WF4A` pour construire une premiere version coherente
+- puis on enrichit seulement les sections prioritaires :
+  - resume
+  - contexte / description
+  - publics
+  - methodologie / mise en oeuvre
+  - moyens / partenariats
+  - budget / plan de financement
+- limite volontaire a `5` sections enrichies par execution pour eviter une latence excessive
+
+Objectif :
+- obtenir des parties plus redigees, plus denses et plus proches d'un brouillon de dossier
+- sans rendre le pipeline trop lent ni trop fragile
+
+Validation technique :
+- compilation Python OK
+- import `pipeline_runtime` OK dans le `.venv`
+- la strategie d'enrichissement sectionnel est activee sans casser le fallback existant
+
+Point de vigilance :
+- le gain de qualite depend toujours de la richesse de `WF2a/WF2b`
+- si une section reste faible, verifier d'abord si la matiere source amont est suffisante
