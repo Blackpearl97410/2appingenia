@@ -915,3 +915,24 @@ Effet produit :
 - les livrables budgetaires sont moins generiques
 - ils sont plus faciles a reprendre dans Excel ou dans une trame financeur
 - on se rapproche d'un vrai support de travail pour montage de dossier
+
+## Export local fiable des livrables
+
+Un point de friction UX a ete traite :
+- dans le navigateur integre, les boutons `download` Streamlit peuvent ne pas donner un retour clair
+
+Solution ajoutee :
+- bouton `Exporter localement dans le dossier exports`
+- generation locale de fichiers dans :
+  - `/Users/alexandrepaviel/Desktop/OF/application AAP ingénia/exports`
+
+Fichiers exportes :
+- presentation projet `.md`
+- budget projet `.md`
+- budget projet `.csv`
+- budget structure `.md` et `.csv` si requis
+- resultat pipeline complet `.json`
+
+Effet produit :
+- meme si le navigateur integre telecharge mal, l'utilisateur dispose d'une voie d'export fiable
+- les livrables retravailles dans l'UI peuvent etre recuperes localement sans ambiguite

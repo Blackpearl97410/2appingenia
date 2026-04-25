@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 from pathlib import Path
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -79,6 +80,7 @@ from app.services.wf4 import (
 # ── Session state helpers ─────────────────────────────────────────────────────
 
 PIPELINE_SCHEMA_VERSION = "2026-04-25-wf4-v2"
+EXPORT_DIR = Path("/Users/alexandrepaviel/Desktop/OF/application AAP ingénia/exports")
 
 
 def get_active_pipeline_outputs(signature: str) -> dict[str, object] | None:
@@ -126,6 +128,47 @@ def get_editable_wf4(signature: str, wf4: dict[str, object]) -> dict[str, object
 def save_editable_wf4(signature: str, wf4: dict[str, object]) -> None:
     st.session_state["editable_wf4_signature"] = signature
     st.session_state["editable_wf4"] = deepcopy(wf4)
+
+
+def write_local_export_files(signature: str, wf4: dict[str, object], pipeline_outputs: dict[str, object]) -> list[Path]:
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_signature = "".join(char for char in signature if char.isalnum())[:12] or "session"
+    base = f"{timestamp}_{safe_signature}"
+
+    livrables = wf4.get("livrables", {})
+    presentation = livrables.get("presentation_projet", {})
+    budget_projet = livrables.get("budget_projet", {})
+    budget_structure = livrables.get("budget_structure", {})
+
+    written_paths: list[Path] = []
+
+    presentation_path = EXPORT_DIR / f"{base}_presentation_projet.md"
+    presentation_path.write_text(str(presentation.get("markdown", "")), encoding="utf-8")
+    written_paths.append(presentation_path)
+
+    budget_project_md_path = EXPORT_DIR / f"{base}_budget_projet.md"
+    budget_project_md_path.write_text(str(budget_projet.get("markdown", "")), encoding="utf-8")
+    written_paths.append(budget_project_md_path)
+
+    budget_project_csv_path = EXPORT_DIR / f"{base}_budget_projet.csv"
+    _budget_to_dataframe(budget_projet.get("structured", {}) or {}).to_csv(budget_project_csv_path, index=False)
+    written_paths.append(budget_project_csv_path)
+
+    if isinstance(budget_structure, dict) and budget_structure.get("required"):
+        budget_structure_md_path = EXPORT_DIR / f"{base}_budget_structure.md"
+        budget_structure_md_path.write_text(str(budget_structure.get("markdown", "")), encoding="utf-8")
+        written_paths.append(budget_structure_md_path)
+
+        budget_structure_csv_path = EXPORT_DIR / f"{base}_budget_structure.csv"
+        _budget_to_dataframe(budget_structure.get("structured", {}) or {}).to_csv(budget_structure_csv_path, index=False)
+        written_paths.append(budget_structure_csv_path)
+
+    json_path = EXPORT_DIR / f"{base}_resultat_pipeline.json"
+    json_path.write_text(json.dumps({**pipeline_outputs, "wf4": wf4}, ensure_ascii=False, indent=2), encoding="utf-8")
+    written_paths.append(json_path)
+
+    return written_paths
 
 
 def _budget_to_dataframe(structured_budget: dict[str, object]) -> pd.DataFrame:
@@ -997,6 +1040,16 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
             st.rerun()
     with info_col:
         st.caption("Les modifications ci-dessous restent dans la session courante et alimentent les exports de cette page.")
+
+    export_key = f"local_export_paths_{pipeline_signature}"
+    if st.button("Exporter localement dans le dossier exports", key=f"export_local_{pipeline_signature}"):
+        written_paths = write_local_export_files(pipeline_signature, wf4, pipeline_outputs)
+        st.session_state[export_key] = [str(path) for path in written_paths]
+    if export_key in st.session_state:
+        st.success("Exports locaux generes dans le dossier `exports/`.")
+        for raw_path in st.session_state[export_key]:
+            path_obj = Path(raw_path)
+            st.markdown(f"- [{path_obj.name}]({path_obj.as_posix()})")
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Sections presentation", str(len(sections)))
