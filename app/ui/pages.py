@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 from streamlit_extras.add_vertical_space import add_vertical_space
 
@@ -67,7 +69,11 @@ from app.services.wf2 import (
 )
 from app.services.wf2_llm import request_wf2a_llm_payload
 from app.services.wf3 import build_wf3_analysis
-from app.services.wf4 import build_wf4_outputs
+from app.services.wf4 import (
+    build_project_budget_markdown,
+    build_project_presentation_markdown,
+    build_wf4_outputs,
+)
 
 
 # ── Session state helpers ─────────────────────────────────────────────────────
@@ -93,6 +99,33 @@ def store_pipeline_outputs(
     st.session_state["pipeline_outputs"] = outputs
     st.session_state["pipeline_persistence"] = persistence or {}
     st.session_state["pipeline_last_error"] = ""
+
+
+def _clear_editable_wf4_state(signature: str) -> None:
+    prefixes = (
+        f"edit_presentation_status_{signature}_",
+        f"edit_presentation_content_{signature}_",
+        f"edit_budget_project_",
+        f"edit_budget_structure_",
+        f"edit_checklist_{signature}",
+    )
+    for key in list(st.session_state.keys()):
+        if any(key.startswith(prefix) for prefix in prefixes):
+            del st.session_state[key]
+
+
+def get_editable_wf4(signature: str, wf4: dict[str, object]) -> dict[str, object]:
+    stored_signature = st.session_state.get("editable_wf4_signature")
+    if stored_signature != signature or "editable_wf4" not in st.session_state:
+        st.session_state["editable_wf4_signature"] = signature
+        st.session_state["editable_wf4"] = deepcopy(wf4)
+        _clear_editable_wf4_state(signature)
+    return deepcopy(st.session_state["editable_wf4"])
+
+
+def save_editable_wf4(signature: str, wf4: dict[str, object]) -> None:
+    st.session_state["editable_wf4_signature"] = signature
+    st.session_state["editable_wf4"] = deepcopy(wf4)
 
 
 # ── Shared display helpers ────────────────────────────────────────────────────
@@ -907,6 +940,9 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
     execution = pipeline_outputs.get("execution", {})
     wf3 = pipeline_outputs.get("wf3", {})
     wf4 = pipeline_outputs.get("wf4", {})
+    pipeline_signature = str(st.session_state.get("pipeline_signature", "default"))
+    editable_wf4 = get_editable_wf4(pipeline_signature, wf4)
+    wf4 = editable_wf4
     rapport = wf4.get("rapport_structured", {})
     livrables = wf4.get("livrables", {})
     presentation = livrables.get("presentation_projet", {})
@@ -932,6 +968,15 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
     else:
         st.caption(f"WF4 : `{wf4_engine}`")
 
+    reset_col, info_col = st.columns([1, 3])
+    with reset_col:
+        if st.button("Reinitialiser les editions", key=f"reset_edits_{pipeline_signature}"):
+            st.session_state["editable_wf4"] = deepcopy(pipeline_outputs.get("wf4", {}))
+            _clear_editable_wf4_state(pipeline_signature)
+            st.rerun()
+    with info_col:
+        st.caption("Les modifications ci-dessous restent dans la session courante et alimentent les exports de cette page.")
+
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Sections presentation", str(len(sections)))
     col2.metric("Budget projet", "pret" if budget_projet_structured else "absent")
@@ -951,9 +996,38 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
 
     with liv_tab_1:
         if sections:
-            for section in sections:
-                with st.expander(f"{section.get('section', 'Section')} · {section.get('statut', 'a_completer')}", expanded=False):
-                    st.write(section.get("contenu", ""))
+            edited_sections = []
+            status_options = ["redige", "partiel", "a_completer", "a_confirmer"]
+            for index, section in enumerate(sections):
+                title = str(section.get("section", "Section"))
+                current_status = str(section.get("statut", "a_completer"))
+                status_key = f"edit_presentation_status_{pipeline_signature}_{index}"
+                content_key = f"edit_presentation_content_{pipeline_signature}_{index}"
+                if status_key not in st.session_state:
+                    st.session_state[status_key] = current_status if current_status in status_options else "partiel"
+                if content_key not in st.session_state:
+                    st.session_state[content_key] = str(section.get("contenu", ""))
+                with st.expander(f"{title} · {st.session_state[status_key]}", expanded=False):
+                    new_status = st.selectbox(
+                        "Statut de la section",
+                        options=status_options,
+                        key=status_key,
+                    )
+                    new_content = st.text_area(
+                        "Contenu de la section",
+                        key=content_key,
+                        height=260,
+                    )
+                    edited_sections.append(
+                        {
+                            "section": title,
+                            "statut": new_status,
+                            "contenu": new_content,
+                        }
+                    )
+            presentation["sections"] = edited_sections
+            presentation["markdown"] = build_project_presentation_markdown(edited_sections)
+            presentation_markdown = str(presentation.get("markdown", ""))
         else:
             st.info("Aucune section de presentation n'a ete produite.")
         st.download_button(
@@ -968,20 +1042,34 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
         charges = list(budget_projet_structured.get("charges", []))
         produits = list(budget_projet_structured.get("produits", []))
         if budget_projet_structured:
-            budget_rows = []
-            max_len = max(len(charges), len(produits))
-            for index in range(max_len):
-                charge = charges[index] if index < len(charges) else {"poste": "", "montant_previsionnel": ""}
-                produit = produits[index] if index < len(produits) else {"poste": "", "montant_previsionnel": ""}
-                budget_rows.append({
-                    "Charges": charge.get("poste", ""),
-                    "Montant charges": charge.get("montant_previsionnel", ""),
-                    "Produits": produit.get("poste", ""),
-                    "Montant produits": produit.get("montant_previsionnel", ""),
-                })
-            st.dataframe(budget_rows, use_container_width=True)
+            st.markdown("#### Charges")
+            charges_df = pd.DataFrame(charges or [{"poste": "", "montant_previsionnel": "", "commentaire": ""}])
+            edited_charges = st.data_editor(
+                charges_df,
+                use_container_width=True,
+                num_rows="dynamic",
+                key=f"edit_budget_project_charges_{pipeline_signature}",
+            )
+            st.markdown("#### Produits")
+            produits_df = pd.DataFrame(produits or [{"poste": "", "montant_previsionnel": "", "commentaire": ""}])
+            edited_produits = st.data_editor(
+                produits_df,
+                use_container_width=True,
+                num_rows="dynamic",
+                key=f"edit_budget_project_produits_{pipeline_signature}",
+            )
+            budget_projet_structured["charges"] = edited_charges.fillna("").to_dict("records")
+            budget_projet_structured["produits"] = edited_produits.fillna("").to_dict("records")
+            budget_projet["structured"] = budget_projet_structured
+            budget_projet["markdown"] = build_project_budget_markdown(budget_projet_structured)
+            notes = list(budget_projet_structured.get("notes", []))
+            if notes:
+                st.markdown("#### Notes budgetaires")
+                for note in notes:
+                    st.write(f"- {note}")
         else:
             st.info("Aucune trame budget projet n'a ete produite.")
+        budget_projet_markdown = str(budget_projet.get("markdown", ""))
         st.download_button(
             "Telecharger la trame budget projet",
             data=budget_projet_markdown,
@@ -993,6 +1081,33 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
     with liv_tab_3:
         if budget_structure.get("required"):
             st.success("Un budget de structure semble requis par l'appel.")
+            structure_structured = budget_structure.get("structured", {}) or {}
+            if structure_structured:
+                st.markdown("#### Charges de structure")
+                structure_charges_df = pd.DataFrame(
+                    list(structure_structured.get("charges", [])) or [{"poste": "", "montant_previsionnel": "", "commentaire": ""}]
+                )
+                edited_structure_charges = st.data_editor(
+                    structure_charges_df,
+                    use_container_width=True,
+                    num_rows="dynamic",
+                    key=f"edit_budget_structure_charges_{pipeline_signature}",
+                )
+                st.markdown("#### Produits de structure")
+                structure_produits_df = pd.DataFrame(
+                    list(structure_structured.get("produits", [])) or [{"poste": "", "montant_previsionnel": "", "commentaire": ""}]
+                )
+                edited_structure_produits = st.data_editor(
+                    structure_produits_df,
+                    use_container_width=True,
+                    num_rows="dynamic",
+                    key=f"edit_budget_structure_produits_{pipeline_signature}",
+                )
+                structure_structured["charges"] = edited_structure_charges.fillna("").to_dict("records")
+                structure_structured["produits"] = edited_structure_produits.fillna("").to_dict("records")
+                budget_structure["structured"] = structure_structured
+                budget_structure["markdown"] = build_project_budget_markdown(structure_structured)
+                budget_structure_markdown = str(budget_structure.get("markdown", ""))
             if budget_structure_markdown:
                 st.download_button(
                     "Telecharger la trame budget structure",
@@ -1006,7 +1121,14 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
 
     with liv_tab_4:
         if checklist:
-            st.dataframe(checklist, use_container_width=True)
+            checklist_df = pd.DataFrame(checklist)
+            edited_checklist = st.data_editor(
+                checklist_df,
+                use_container_width=True,
+                num_rows="dynamic",
+                key=f"edit_checklist_{pipeline_signature}",
+            )
+            livrables["points_a_completer"] = edited_checklist.fillna("").to_dict("records")
         else:
             st.info("Aucun point de completion remonte.")
 
@@ -1035,11 +1157,13 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
 
         st.download_button(
             "Telecharger la sortie JSON complete",
-            data=json.dumps(pipeline_outputs, ensure_ascii=False, indent=2),
+            data=json.dumps({**pipeline_outputs, "wf4": wf4}, ensure_ascii=False, indent=2),
             file_name="resultat_pipeline.json",
             mime="application/json",
             key="download_final_json",
         )
+
+    save_editable_wf4(pipeline_signature, wf4)
 
 
 # ── Global summary sections ───────────────────────────────────────────────────

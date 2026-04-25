@@ -857,3 +857,26 @@ Validation technique :
 Point de vigilance :
 - le gain de qualite depend toujours de la richesse de `WF2a/WF2b`
 - si une section reste faible, verifier d'abord si la matiere source amont est suffisante
+
+## Livrables editables dans l'application
+
+Le jalon "brouillon exploitable et modifiable" a ete franchi.
+
+Ce qui change :
+- la **presentation projet** est maintenant editable section par section dans l'UI
+- le **budget projet** est editable directement dans l'application
+- le **budget structure** est editable quand il est requis
+- la **checklist des points a completer** est aussi editable
+- les **exports markdown/json** de la page finale reutilisent la version editee, pas seulement la version brute du pipeline
+
+Implementation :
+- `/Users/alexandrepaviel/Desktop/OF/application AAP ingénia/app/ui/pages.py`
+  - ajout d'un etat `editable_wf4` en session
+  - bouton de reinitialisation des editions
+  - edition des sections de presentation via `text_area`
+  - edition des budgets et de la checklist via `st.data_editor`
+
+Effet produit :
+- l'utilisateur n'est plus bloque avec un livrable passif
+- il peut corriger, densifier, ajuster et exporter dans la meme session
+- cela rapproche l'application d'un vrai back-office de pre-production de dossier
