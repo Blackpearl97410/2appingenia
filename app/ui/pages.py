@@ -4,10 +4,18 @@ from copy import deepcopy
 import json
 from pathlib import Path
 from datetime import datetime
+import platform
+import subprocess
 
 import pandas as pd
 import streamlit as st
-from streamlit_extras.add_vertical_space import add_vertical_space
+
+try:
+    from streamlit_extras.add_vertical_space import add_vertical_space
+except ModuleNotFoundError:
+    def add_vertical_space(lines: int = 1) -> None:
+        for _ in range(max(0, int(lines))):
+            st.write("")
 
 from app.services.block_analysis import (
     apply_manual_completion,
@@ -171,6 +179,28 @@ def write_local_export_files(signature: str, wf4: dict[str, object], pipeline_ou
     return written_paths
 
 
+def open_local_exports_dir() -> tuple[bool, str]:
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        system = platform.system().lower()
+        if system == "darwin":
+            subprocess.run(["open", str(EXPORT_DIR)], check=True)
+        elif system == "windows":
+            subprocess.run(["explorer", str(EXPORT_DIR)], check=True)
+        else:
+            subprocess.run(["xdg-open", str(EXPORT_DIR)], check=True)
+        return True, ""
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+
+
+def export_single_local_file(filename: str, content: str) -> Path:
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    target = EXPORT_DIR / filename
+    target.write_text(content, encoding="utf-8")
+    return target
+
+
 def _budget_to_dataframe(structured_budget: dict[str, object]) -> pd.DataFrame:
     charges = list(structured_budget.get("charges", []))
     produits = list(structured_budget.get("produits", []))
@@ -181,11 +211,17 @@ def _budget_to_dataframe(structured_budget: dict[str, object]) -> pd.DataFrame:
         produit = produits[index] if index < len(produits) else {}
         rows.append(
             {
+                "Section charges": charge.get("section", "") or charge.get("sous_section", ""),
                 "Charges": charge.get("poste", ""),
                 "Montant charges": charge.get("montant_previsionnel", ""),
+                "Statut charges": charge.get("statut", ""),
+                "Source charges": charge.get("source", ""),
                 "Commentaire charges": charge.get("commentaire", ""),
+                "Section produits": produit.get("section", "") or produit.get("sous_section", ""),
                 "Produits": produit.get("poste", ""),
                 "Montant produits": produit.get("montant_previsionnel", ""),
+                "Statut produits": produit.get("statut", ""),
+                "Source produits": produit.get("source", ""),
                 "Commentaire produits": produit.get("commentaire", ""),
             }
         )
@@ -448,9 +484,15 @@ def render_llm_page() -> None:
         st.write("**Google Gemini**")
         st.code('LLM_PROVIDER=\"google\"\nGOOGLE_API_KEY=\"...\"\nGOOGLE_MODEL=\"gemini-2.5-flash\"', language="toml")
         st.write("**Mistral**")
-        st.code('LLM_PROVIDER=\"mistral\"\nMISTRAL_API_KEY=\"...\"\nMISTRAL_MODEL=\"mistral-small-2603\"', language="toml")
+        st.code(
+            'LLM_PROVIDER=\"mistral\"\n'
+            'MISTRAL_API_KEY=\"...\"\n'
+            'MISTRAL_MODEL=\"mistral-small-2603\"\n'
+            'MISTRAL_AGENT_BUDGET_PROJET_ID=\"ag_xxx...\"',
+            language="toml",
+        )
         st.caption(
-            "Pour Gemma, garde la meme integration Google. Si ton compte Google AI Studio ou Vertex expose un modele Gemma compatible API, il suffira de remplacer `GOOGLE_MODEL`. Pour Mistral, `mistral-small-2603` est le choix le plus stable ici ; `ministral-8b-2410` reste possible mais il est documente comme deprecie."
+            "Pour Gemma, garde la meme integration Google. Si ton compte Google AI Studio ou Vertex expose un modele Gemma compatible API, il suffira de remplacer `GOOGLE_MODEL`. Pour Mistral, `mistral-small-2603` est le choix retenu et recommande ici. Si `MISTRAL_AGENT_BUDGET_PROJET_ID` est defini, la generation du budget projet WF4B passera par cet agent."
         )
 
     st.markdown("### Test de preparation WF2a")
@@ -1042,14 +1084,40 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
         st.caption("Les modifications ci-dessous restent dans la session courante et alimentent les exports de cette page.")
 
     export_key = f"local_export_paths_{pipeline_signature}"
+    export_error_key = f"local_export_error_{pipeline_signature}"
     if st.button("Exporter localement dans le dossier exports", key=f"export_local_{pipeline_signature}"):
-        written_paths = write_local_export_files(pipeline_signature, wf4, pipeline_outputs)
-        st.session_state[export_key] = [str(path) for path in written_paths]
+        try:
+            written_paths = write_local_export_files(pipeline_signature, wf4, pipeline_outputs)
+            st.session_state[export_key] = [str(path) for path in written_paths]
+            st.session_state[export_error_key] = ""
+            opened, open_error = open_local_exports_dir()
+            if not opened and open_error:
+                st.session_state[export_error_key] = open_error
+        except Exception as exc:  # noqa: BLE001
+            st.session_state[export_key] = []
+            st.session_state[export_error_key] = str(exc)
     if export_key in st.session_state:
-        st.success("Exports locaux generes dans le dossier `exports/`.")
-        for raw_path in st.session_state[export_key]:
-            path_obj = Path(raw_path)
-            st.markdown(f"- [{path_obj.name}]({path_obj.as_posix()})")
+        if st.session_state[export_key]:
+            st.success("Exports locaux generes dans le dossier `exports/`.")
+            st.caption(f"Dossier local : `{EXPORT_DIR}`")
+            for raw_path in st.session_state[export_key]:
+                path_obj = Path(raw_path)
+                st.markdown(f"- `{path_obj.name}`")
+            if st.session_state.get(export_error_key):
+                st.warning(
+                    "Les fichiers ont bien ete generes, mais l'ouverture automatique du dossier a echoue. "
+                    f"Ouvre manuellement : `{EXPORT_DIR}`"
+                )
+        elif st.session_state.get(export_error_key):
+            st.error(f"Echec de l'export local : {st.session_state[export_error_key]}")
+
+    open_dir_key = f"open_exports_dir_{pipeline_signature}"
+    if st.button("Ouvrir le dossier exports", key=open_dir_key):
+        opened, open_error = open_local_exports_dir()
+        if opened:
+            st.success(f"Dossier ouvert : `{EXPORT_DIR}`")
+        else:
+            st.error(f"Impossible d'ouvrir automatiquement le dossier : {open_error}")
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Sections presentation", str(len(sections)))
@@ -1104,20 +1172,56 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
             presentation_markdown = str(presentation.get("markdown", ""))
         else:
             st.info("Aucune section de presentation n'a ete produite.")
-        st.download_button(
+        pres_dl_col1, pres_dl_col2 = st.columns(2)
+        pres_dl_col1.download_button(
             "Telecharger la presentation projet",
             data=presentation_markdown,
             file_name="presentation_projet.md",
             mime="text/markdown",
             key="download_final_presentation",
         )
+        if pres_dl_col2.button("Enregistrer la presentation dans exports", key=f"save_presentation_exports_{pipeline_signature}"):
+            path = export_single_local_file("presentation_projet.md", presentation_markdown)
+            st.success(f"Fichier enregistre : `{path}`")
 
     with liv_tab_2:
         charges = list(budget_projet_structured.get("charges", []))
         produits = list(budget_projet_structured.get("produits", []))
         if budget_projet_structured:
+            budget_meta = budget_projet_structured.get("metadata", {}) if isinstance(budget_projet_structured.get("metadata", {}), dict) else {}
+            financeur = budget_meta.get("financeur_principal", {}) if isinstance(budget_meta.get("financeur_principal", {}), dict) else {}
+            periode = budget_meta.get("periode", {}) if isinstance(budget_meta.get("periode", {}), dict) else {}
+            structure = budget_meta.get("structure_porteuse", {}) if isinstance(budget_meta.get("structure_porteuse", {}), dict) else {}
+            meta_lines = []
+            description = str(budget_meta.get("description", "")).strip()
+            if description:
+                meta_lines.append(description)
+            synthese_financements = str(budget_meta.get("synthese_financements", "")).strip()
+            if synthese_financements:
+                meta_lines.append(f"Synthese financements : {synthese_financements}")
+            if financeur:
+                financeur_bits = [str(financeur.get("nom", "")).strip(), str(financeur.get("type", "")).strip()]
+                if str(financeur.get("taux_max", "")).strip():
+                    financeur_bits.append(f"taux max {financeur.get('taux_max')}")
+                if str(financeur.get("plafond", "")).strip():
+                    financeur_bits.append(f"plafond {financeur.get('plafond')}")
+                meta_lines.append("Financeur principal : " + " | ".join(bit for bit in financeur_bits if bit))
+            if periode and (periode.get("debut") or periode.get("fin")):
+                meta_lines.append(f"Periode : {periode.get('debut', 'A_COMPLETER')} -> {periode.get('fin', 'A_COMPLETER')}")
+            if structure:
+                structure_bits = [str(structure.get("nom", "")).strip(), str(structure.get("forme_juridique", "")).strip()]
+                if str(structure.get("territoire", "")).strip():
+                    structure_bits.append(str(structure.get("territoire", "")).strip())
+                meta_lines.append("Structure porteuse : " + " | ".join(bit for bit in structure_bits if bit))
+            if meta_lines:
+                st.markdown("#### Contexte budgetaire")
+                for line in meta_lines:
+                    st.write(f"- {line}")
             st.markdown("#### Charges")
-            charges_df = pd.DataFrame(charges or [{"poste": "", "montant_previsionnel": "", "commentaire": ""}])
+            charges_df = pd.DataFrame(
+                charges
+                or [{"section": "", "sous_section": "", "poste": "", "montant_previsionnel": "", "commentaire": "", "statut": "", "source": ""}]
+            )
             edited_charges = st.data_editor(
                 charges_df,
                 use_container_width=True,
@@ -1125,7 +1229,10 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
                 key=f"edit_budget_project_charges_{pipeline_signature}",
             )
             st.markdown("#### Produits")
-            produits_df = pd.DataFrame(produits or [{"poste": "", "montant_previsionnel": "", "commentaire": ""}])
+            produits_df = pd.DataFrame(
+                produits
+                or [{"section": "", "sous_section": "", "poste": "", "montant_previsionnel": "", "commentaire": "", "statut": "", "source": ""}]
+            )
             edited_produits = st.data_editor(
                 produits_df,
                 use_container_width=True,
@@ -1161,6 +1268,15 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
             mime="text/csv",
             key="download_final_budget_projet_csv",
         )
+        budget_save_col1, budget_save_col2 = st.columns(2)
+        if budget_save_col1.button("Enregistrer budget projet (.md)", key=f"save_budget_project_md_{pipeline_signature}"):
+            path = export_single_local_file("budget_projet.md", budget_projet_markdown)
+            st.success(f"Fichier enregistre : `{path}`")
+        if budget_save_col2.button("Enregistrer budget projet (.csv)", key=f"save_budget_project_csv_{pipeline_signature}"):
+            path = EXPORT_DIR / "budget_projet.csv"
+            EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+            path.write_text(budget_project_csv, encoding="utf-8")
+            st.success(f"Fichier enregistre : `{path}`")
 
     with liv_tab_3:
         if budget_structure.get("required"):
@@ -1216,6 +1332,15 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
                     mime="text/csv",
                     key="download_final_budget_structure_csv",
                 )
+                structure_save_col1, structure_save_col2 = st.columns(2)
+                if structure_save_col1.button("Enregistrer budget structure (.md)", key=f"save_budget_structure_md_{pipeline_signature}"):
+                    path = export_single_local_file("budget_structure.md", budget_structure_markdown)
+                    st.success(f"Fichier enregistre : `{path}`")
+                if structure_save_col2.button("Enregistrer budget structure (.csv)", key=f"save_budget_structure_csv_{pipeline_signature}"):
+                    path = EXPORT_DIR / "budget_structure.csv"
+                    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+                    path.write_text(structure_csv, encoding="utf-8")
+                    st.success(f"Fichier enregistre : `{path}`")
         else:
             st.info("Aucun budget de structure requis n'a ete detecte.")
 
@@ -1789,6 +1914,7 @@ def render_upload() -> None:
             "WF4": execution_meta.get("wf4", {}).get("engine", "heuristique_locale"),
             "Provider LLM": execution_meta.get("llm_selection", {}).get("provider", "defaut"),
             "Modele LLM": execution_meta.get("llm_selection", {}).get("model", "defaut"),
+            "Agent budget projet": execution_meta.get("wf4", {}).get("budget_project_agent_id", "") or "non configure",
             "Fallback": "oui"
             if any(
                 step.get("fallback_used")

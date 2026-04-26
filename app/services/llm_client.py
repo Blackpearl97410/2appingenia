@@ -11,6 +11,7 @@ load_project_env()
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"
 DEFAULT_MISTRAL_MODEL = "mistral-small-2603"
+DEPRECATED_MISTRAL_MODELS = {"ministral-8b-2410"}
 VALID_LLM_PROVIDERS = {"anthropic", "google", "mistral"}
 COMMON_LLM_MODELS = {
     "anthropic": [
@@ -24,7 +25,6 @@ COMMON_LLM_MODELS = {
     ],
     "mistral": [
         DEFAULT_MISTRAL_MODEL,
-        "ministral-8b-2410",
     ],
 }
 
@@ -38,6 +38,7 @@ class LLMSettings:
     anthropic_model: str = DEFAULT_ANTHROPIC_MODEL
     google_model: str = DEFAULT_GOOGLE_MODEL
     mistral_model: str = DEFAULT_MISTRAL_MODEL
+    mistral_budget_project_agent_id: str = ""
     max_tokens: int = 1500
     temperature: float = 0.1
 
@@ -100,6 +101,7 @@ def load_llm_settings(provider_override: str | None = None, model_override: str 
     anthropic_api_key = get_env_value("ANTHROPIC_API_KEY", "")
     google_api_key = get_env_value("GOOGLE_API_KEY", "")
     mistral_api_key = get_env_value("MISTRAL_API_KEY", "")
+    mistral_budget_project_agent_id = get_env_value("MISTRAL_AGENT_BUDGET_PROJET_ID", "").strip()
 
     provider_candidate = (provider_override or provider_raw).strip().lower()
 
@@ -114,6 +116,8 @@ def load_llm_settings(provider_override: str | None = None, model_override: str 
     anthropic_model = get_env_value("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MODEL)
     google_model = get_env_value("GOOGLE_MODEL", DEFAULT_GOOGLE_MODEL)
     mistral_model = get_env_value("MISTRAL_MODEL", DEFAULT_MISTRAL_MODEL)
+    if mistral_model in DEPRECATED_MISTRAL_MODELS:
+        mistral_model = DEFAULT_MISTRAL_MODEL
 
     if model_override:
         if provider_candidate == "google":
@@ -123,6 +127,9 @@ def load_llm_settings(provider_override: str | None = None, model_override: str 
         else:
             anthropic_model = model_override.strip()
 
+    if mistral_model in DEPRECATED_MISTRAL_MODELS:
+        mistral_model = DEFAULT_MISTRAL_MODEL
+
     return LLMSettings(
         provider=provider_candidate,
         anthropic_api_key=anthropic_api_key,
@@ -131,6 +138,7 @@ def load_llm_settings(provider_override: str | None = None, model_override: str 
         anthropic_model=anthropic_model,
         google_model=google_model,
         mistral_model=mistral_model,
+        mistral_budget_project_agent_id=mistral_budget_project_agent_id,
         max_tokens=max_tokens,
         temperature=temperature,
     )
@@ -173,6 +181,7 @@ def describe_llm_readiness() -> dict[str, str]:
         "ANTHROPIC_API_KEY": "configuree" if settings.anthropic_api_key else "non configuree",
         "GOOGLE_API_KEY": "configuree" if settings.google_api_key else "non configuree",
         "MISTRAL_API_KEY": "configuree" if settings.mistral_api_key else "non configuree",
+        "MISTRAL_AGENT_BUDGET_PROJET_ID": settings.mistral_budget_project_agent_id or "non configure",
         "Max tokens": str(settings.max_tokens),
         "Temperature": str(settings.temperature),
     }
@@ -284,6 +293,18 @@ def call_google_message(
     request_max_tokens = max_tokens or settings.max_tokens
 
     try:
+        from google.genai import types as genai_types
+        response = client.models.generate_content(
+            model=settings.active_model,
+            contents=user_prompt,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=settings.temperature,
+                max_output_tokens=request_max_tokens,
+            ),
+        )
+    except (ImportError, TypeError):
+        # Fallback si la version de google-genai ne supporte pas GenerateContentConfig
         response = client.models.generate_content(
             model=settings.active_model,
             contents=f"{system_prompt}\n\n{user_prompt}",
@@ -292,6 +313,16 @@ def call_google_message(
                 "max_output_tokens": request_max_tokens,
             },
         )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "provider": settings.provider,
+            "model": settings.active_model,
+            "error": f"{exc.__class__.__name__}: {exc}",
+            "text": "",
+            "usage": {},
+        }
+    try:
         text = getattr(response, "text", "") or ""
         usage = getattr(response, "usage_metadata", None)
         return {
@@ -377,6 +408,70 @@ def call_mistral_message(
             "ok": False,
             "provider": settings.provider,
             "model": settings.active_model,
+            "error": f"{exc.__class__.__name__}: {exc}",
+            "text": "",
+            "usage": {},
+        }
+
+
+def call_mistral_agent_message(
+    agent_id: str,
+    user_prompt: str,
+    *,
+    max_tokens: int | None = None,
+    provider_override: str | None = None,
+) -> dict[str, object]:
+    settings = load_llm_settings(provider_override=provider_override)
+    if settings.provider != "mistral":
+        return {
+            "ok": False,
+            "provider": settings.provider,
+            "model": settings.active_model,
+            "error": "provider_mistral_non_actif",
+            "text": "",
+            "usage": {},
+        }
+
+    client = create_llm_client(provider_override=provider_override)
+    if client is None:
+        return {
+            "ok": False,
+            "provider": settings.provider,
+            "model": settings.active_model,
+            "error": "client_llm_non_configure",
+            "text": "",
+            "usage": {},
+        }
+
+    request_max_tokens = max_tokens or settings.max_tokens
+
+    try:
+        response = client.agents.complete(
+            agent_id=agent_id,
+            max_tokens=request_max_tokens,
+            messages=[
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        message = getattr(response, "choices", [None])[0]
+        content = getattr(getattr(message, "message", None), "content", "") if message else ""
+        usage = getattr(response, "usage", None)
+        return {
+            "ok": True,
+            "provider": settings.provider,
+            "model": f"agent:{agent_id}",
+            "text": (content or "").strip(),
+            "usage": {
+                "input_tokens": getattr(usage, "prompt_tokens", None),
+                "output_tokens": getattr(usage, "completion_tokens", None),
+            },
+            "raw": response,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "provider": settings.provider,
+            "model": f"agent:{agent_id}",
             "error": f"{exc.__class__.__name__}: {exc}",
             "text": "",
             "usage": {},

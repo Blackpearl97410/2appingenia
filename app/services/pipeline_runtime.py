@@ -25,6 +25,8 @@ from app.services.wf4 import (
     build_wf4_outputs,
 )
 from app.services.wf4_llm import (
+    get_section_guidance,
+    infer_presentation_section_type,
     request_wf4a_llm_payload,
     request_wf4a_section_payload,
     request_wf4b_llm_payload,
@@ -412,43 +414,325 @@ def _normalize_budget_rows(items: object) -> list[dict[str, object]]:
     for item in items:
         if not isinstance(item, dict):
             continue
+        section = str(item.get("section", "")).strip()
+        sous_section = str(item.get("sous_section", "")).strip()
+        poste = (
+            str(item.get("poste", "")).strip()
+            or str(item.get("intitule", "")).strip()
+            or str(item.get("financeur_ou_source", "")).strip()
+            or str(item.get("financeur", "")).strip()
+            or str(item.get("source", "")).strip()
+            or "A_COMPLETER"
+        )
+        montant = (
+            str(item.get("montant", "")).strip()
+            or str(item.get("montant_previsionnel", "")).strip()
+            or str(item.get("montant_total", "")).strip()
+            or str(item.get("cout_total", "")).strip()
+            or "A_COMPLETER"
+        )
+        commentaire_parts = [
+            str(item.get("commentaire", "")).strip(),
+            str(item.get("description", "")).strip(),
+            str(item.get("detail", "")).strip(),
+            str(item.get("details", "")).strip(),
+            str(item.get("remarques", "")).strip(),
+        ]
+        quantite = str(item.get("quantite", "")).strip()
+        unite = str(item.get("unite", "")).strip()
+        cout_unitaire = str(item.get("cout_unitaire", "")).strip()
+        if quantite or unite or cout_unitaire:
+            commentaire_parts.append(
+                "Quantite="
+                f"{quantite or 'A_COMPLETER'} | "
+                f"Unite={unite or 'A_COMPLETER'} | "
+                f"Cout unitaire={cout_unitaire or 'A_COMPLETER'}"
+            )
+        financeurs = item.get("financeurs", [])
+        if isinstance(financeurs, list):
+            financeurs_text = ", ".join(str(entry).strip() for entry in financeurs if str(entry).strip())
+            if financeurs_text:
+                commentaire_parts.append(f"Financeurs lies: {financeurs_text}")
         rows.append(
             {
-                "poste": str(item.get("poste", "")).strip() or "A_COMPLETER",
-                "montant_previsionnel": str(item.get("montant", "")).strip() or "A_COMPLETER",
-                "commentaire": str(item.get("commentaire", "")).strip(),
-                "statut": str(item.get("statut", "")).strip(),
+                "section": section,
+                "sous_section": sous_section,
+                "poste": poste,
+                "montant_previsionnel": montant,
+                "commentaire": " | ".join(part for part in commentaire_parts if part),
+                "statut": str(item.get("statut", "")).strip() or str(item.get("status", "")).strip(),
                 "source": str(item.get("source", "")).strip(),
             }
         )
     return rows
 
 
-def _normalize_budget_payload(payload: dict[str, object], fallback_structured: dict[str, object]) -> dict[str, object]:
+def _extract_budget_root(payload: dict[str, object]) -> dict[str, object]:
     payload = payload if isinstance(payload, dict) else {}
+    nested = payload.get("budget_projet")
+    if isinstance(nested, dict):
+        return nested
+    return payload
+
+
+def _coerce_string_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _flatten_budget_section(section: object, *, kind: str) -> list[dict[str, object]]:
+    if not isinstance(section, dict):
+        return []
+
+    section_name = str(section.get("section", "")).strip() or str(section.get("titre", "")).strip()
+    flattened: list[dict[str, object]] = []
+
+    def append_lines(lines: object, current_sub_section: str = "") -> None:
+        if not isinstance(lines, list):
+            return
+        for line in lines:
+            if not isinstance(line, dict):
+                continue
+            parent_label = str(line.get("poste", "")).strip() or str(line.get("intitule", "")).strip()
+            description = line.get("description", "") or line.get("detail", "") or line.get("details", "")
+
+            sous_postes = line.get("sous_postes", [])
+            if isinstance(sous_postes, list) and sous_postes:
+                for sub_line in sous_postes:
+                    if not isinstance(sub_line, dict):
+                        continue
+                    sub_label = str(sub_line.get("intitule", "")).strip() or parent_label
+                    combined_description = " | ".join(
+                        part
+                        for part in [str(description).strip(), str(sub_line.get("detail", "")).strip(), str(sub_line.get("details", "")).strip()]
+                        if part
+                    )
+                    flattened.append(
+                        {
+                            "section": section_name,
+                            "sous_section": current_sub_section or parent_label,
+                            "poste": sub_label if kind == "charge" else "",
+                            "financeur_ou_source": sub_label if kind == "produit" else "",
+                            "financeur": parent_label if kind == "produit" else "",
+                            "intitule": sub_label,
+                            "description": combined_description,
+                            "quantite": sub_line.get("quantite", ""),
+                            "unite": sub_line.get("unite", ""),
+                            "cout_unitaire": sub_line.get("cout_unitaire", ""),
+                            "montant_total": sub_line.get("montant_total", "") if kind == "charge" else sub_line.get("montant", ""),
+                            "montant": sub_line.get("montant", ""),
+                            "statut": sub_line.get("statut", ""),
+                            "source": sub_line.get("source", ""),
+                            "commentaire": sub_line.get("commentaire", "") or sub_line.get("remarques", "") or f"Poste parent : {parent_label}",
+                            "financeurs": sub_line.get("financeurs", []),
+                        }
+                    )
+                continue
+
+            flattened.append(
+                {
+                    "section": section_name,
+                    "sous_section": current_sub_section,
+                    "poste": parent_label if kind == "charge" else "",
+                    "financeur_ou_source": parent_label if kind == "produit" else "",
+                    "financeur": str(line.get("financeur", "")).strip() if kind == "produit" else "",
+                    "intitule": str(line.get("intitule", "")).strip(),
+                    "description": description,
+                    "quantite": line.get("quantite", ""),
+                    "unite": line.get("unite", ""),
+                    "cout_unitaire": line.get("cout_unitaire", ""),
+                    "montant_total": line.get("montant_total", "") if kind == "charge" else line.get("montant", ""),
+                    "montant": line.get("montant", ""),
+                    "statut": line.get("statut", ""),
+                    "source": line.get("source", ""),
+                    "commentaire": line.get("commentaire", "") or line.get("remarques", ""),
+                    "financeurs": line.get("financeurs", []),
+                }
+            )
+
+    append_lines(section.get("lignes", []))
+    append_lines(section.get("details", []))
+
+    sous_sections = section.get("sous_sections", [])
+    if isinstance(sous_sections, list):
+        for sub_section in sous_sections:
+            if not isinstance(sub_section, dict):
+                continue
+            sub_name = str(sub_section.get("titre", "")).strip() or str(sub_section.get("section", "")).strip()
+            append_lines(sub_section.get("lignes", []), sub_name)
+            append_lines(sub_section.get("details", []), sub_name)
+
+    return flattened
+
+
+def _normalize_budget_notes(payload: dict[str, object]) -> list[str]:
+    notes = _dedup_strings([str(item) for item in payload.get("notes_budgetaires", [])])
+
+    financeur = payload.get("financeur_principal", {})
+    if isinstance(financeur, dict):
+        financeur_note = " | ".join(
+            part
+            for part in [
+                str(financeur.get("nom", "")).strip(),
+                str(financeur.get("type", "")).strip(),
+                f"taux max={str(financeur.get('taux_max', '')).strip()}" if str(financeur.get("taux_max", "")).strip() else "",
+                f"plafond={str(financeur.get('plafond', '')).strip()}" if str(financeur.get("plafond", "")).strip() else "",
+            ]
+            if part
+        )
+        if financeur_note:
+            notes.append("Financeur principal : " + financeur_note)
+        notes.extend(_dedup_strings(_coerce_string_list(financeur.get("criteres_eligibilite", []))))
+
+    periode = payload.get("periode", {})
+    if isinstance(periode, dict):
+        debut = str(periode.get("debut", "")).strip()
+        fin = str(periode.get("fin", "")).strip()
+        if debut or fin:
+            notes.append(f"Periode budgetaire : {debut or 'A_COMPLETER'} -> {fin or 'A_COMPLETER'}")
+
+    synthese = str(payload.get("synthese_financements", "")).strip() or str(payload.get("synthese_executive", "")).strip()
+    if synthese:
+        notes.append(synthese)
+
+    analyse = payload.get("analyse_equilibre") or payload.get("analyse_budgetaire")
+    if isinstance(analyse, str):
+        if analyse.strip():
+            notes.append(analyse.strip())
+    elif isinstance(analyse, dict):
+        notes.extend(_dedup_strings(_coerce_string_list(analyse.get("alertes", []))))
+        notes.extend(_dedup_strings(_coerce_string_list(analyse.get("coherences_detectees", []))))
+        notes.extend(_dedup_strings(_coerce_string_list(analyse.get("incoherences_detectees", []))))
+        niveau = str(analyse.get("niveau_fiabilite", "")).strip()
+        if niveau:
+            notes.append(f"Niveau de fiabilite budgetaire : {niveau}")
+
+    contraintes = payload.get("contraintes_financeur", {})
+    if isinstance(contraintes, dict):
+        for label, key in [
+            ("Plafond subvention", "plafond_subvention"),
+            ("Taux maximum", "taux_maximum"),
+            ("Autofinancement minimum", "autofinancement_minimum"),
+            ("Cofinancement attendu", "cofinancement_attendu"),
+        ]:
+            value = str(contraintes.get(key, "")).strip()
+            if value:
+                notes.append(f"{label} : {value}")
+        notes.extend(_dedup_strings(_coerce_string_list(contraintes.get("regles_specifiques", []))))
+
+    pieces = payload.get("pièces_jointes", payload.get("pieces_jointes", []))
+    pieces_list = _coerce_string_list(pieces)
+    if pieces_list:
+        notes.append("Pieces jointes budget : " + " | ".join(str(item).strip() for item in pieces_list if str(item).strip()))
+
+    return _dedup_strings(notes)
+
+
+def _normalize_budget_payload(payload: dict[str, object], fallback_structured: dict[str, object]) -> dict[str, object]:
+    payload = _extract_budget_root(payload)
     charges = _normalize_budget_rows(payload.get("charges", []))
     produits = _normalize_budget_rows(payload.get("produits", []))
+
+    if not charges:
+        section_rows = []
+        for section in payload.get("sections_charges", []):
+            if not isinstance(section, dict):
+                continue
+            section_name = str(section.get("section", "")).strip()
+            for line in section.get("lignes", []):
+                if not isinstance(line, dict):
+                    continue
+                section_rows.append(
+                    {
+                        "poste": str(line.get("poste", "")).strip() or section_name,
+                        "montant_previsionnel": str(line.get("montant_total", "")).strip(),
+                        "commentaire": str(line.get("commentaire", "")).strip()
+                        or str(line.get("description", "")).strip(),
+                    }
+                )
+        charges = _normalize_budget_rows(section_rows)
+
+    sections = payload.get("sections", {})
+    if not charges and isinstance(sections, dict):
+        charges = _normalize_budget_rows(_flatten_budget_section(sections.get("charges", {}), kind="charge"))
+
+    if not produits:
+        section_rows = []
+        for section in payload.get("sections_produits", []):
+            if not isinstance(section, dict):
+                continue
+            section_name = str(section.get("section", "")).strip()
+            for line in section.get("lignes", []):
+                if not isinstance(line, dict):
+                    continue
+                section_rows.append(
+                    {
+                        "poste": str(line.get("financeur_ou_source", "")).strip() or section_name,
+                        "montant_previsionnel": str(line.get("montant", "")).strip(),
+                        "commentaire": str(line.get("commentaire", "")).strip()
+                        or str(line.get("description", "")).strip(),
+                    }
+                )
+        produits = _normalize_budget_rows(section_rows)
+
+    if not produits and isinstance(sections, dict):
+        produits = _normalize_budget_rows(_flatten_budget_section(sections.get("produits", {}), kind="produit"))
+
     if not charges and not produits:
         return fallback_structured
 
-    notes = _dedup_strings([str(item) for item in payload.get("notes_budgetaires", [])])
+    notes = _normalize_budget_notes(payload)
     totaux = payload.get("totaux", {}) if isinstance(payload.get("totaux", {}), dict) else {}
+    if not totaux and isinstance(sections, dict):
+        charges_section = sections.get("charges", {})
+        produits_section = sections.get("produits", {})
+        if isinstance(charges_section, dict) or isinstance(produits_section, dict):
+            totaux = {
+                "total_charges": str(charges_section.get("total_charges", "")).strip() if isinstance(charges_section, dict) else "",
+                "total_produits": str(produits_section.get("total_produits", "")).strip() if isinstance(produits_section, dict) else "",
+                "equilibre_budgetaire": str(payload.get("statut", "")).strip(),
+            }
     if totaux:
+        charges_total = str(
+            totaux.get("charges", totaux.get("total_charges", "A_COMPLETER"))
+        ).strip() or "A_COMPLETER"
+        produits_total = str(
+            totaux.get("produits", totaux.get("total_produits", "A_COMPLETER"))
+        ).strip() or "A_COMPLETER"
+        equilibre = str(
+            totaux.get("equilibre", totaux.get("equilibre_budgetaire", "A_CONFIRMER"))
+        ).strip() or "A_CONFIRMER"
         notes.append(
             "Totaux : charges="
-            f"{str(totaux.get('charges', 'A_COMPLETER')).strip() or 'A_COMPLETER'} | "
-            f"produits={str(totaux.get('produits', 'A_COMPLETER')).strip() or 'A_COMPLETER'} | "
-            f"equilibre={str(totaux.get('equilibre', 'A_CONFIRMER')).strip() or 'A_CONFIRMER'}"
+            f"{charges_total} | "
+            f"produits={produits_total} | "
+            f"equilibre={equilibre}"
         )
 
+    if isinstance(payload.get("analyse_budgetaire"), dict):
+        analyse = payload.get("analyse_budgetaire", {})
+        notes.extend(_dedup_strings([str(item) for item in analyse.get("alertes", [])]))
+        notes.extend(_dedup_strings([str(item) for item in analyse.get("incoherences_detectees", [])]))
+
     return {
-        "titre": str(payload.get("titre_document", fallback_structured.get("titre", "Budget previsionnel"))).strip()
+        "titre": str(payload.get("titre_document", payload.get("titre", fallback_structured.get("titre", "Budget previsionnel")))).strip()
         or fallback_structured.get("titre", "Budget previsionnel"),
         "colonnes": list(payload.get("colonnes", fallback_structured.get("colonnes", []))),
         "charges": charges,
         "produits": produits,
         "notes": notes,
-        "points_a_completer": _dedup_strings([str(item) for item in payload.get("points_a_completer", [])]),
+        "metadata": {
+            "description": str(payload.get("description", "")).strip(),
+            "synthese_financements": str(payload.get("synthese_financements", "")).strip(),
+            "statut": str(payload.get("statut", "")).strip(),
+            "periode": payload.get("periode", {}) if isinstance(payload.get("periode", {}), dict) else {},
+            "financeur_principal": payload.get("financeur_principal", {}) if isinstance(payload.get("financeur_principal", {}), dict) else {},
+            "structure_porteuse": payload.get("structure_porteuse", {}) if isinstance(payload.get("structure_porteuse", {}), dict) else {},
+        },
+        "points_a_completer": _dedup_strings(_coerce_string_list(payload.get("points_a_completer", []))),
     }
 
 
@@ -516,6 +800,10 @@ def resolve_wf4_outputs(
                 "objectif_section": str(section.get("section", "")).strip(),
                 "contenu_initial": section_body,
                 "statut_initial": str(section.get("statut", "")).strip().lower(),
+                "section_type": infer_presentation_section_type(str(section.get("section", "")).strip()),
+                "consignes_section": get_section_guidance(
+                    infer_presentation_section_type(str(section.get("section", "")).strip())
+                ),
             }
             llm_section_attempts += 1
             section_result = request_wf4a_section_payload(
@@ -567,7 +855,10 @@ def resolve_wf4_outputs(
             "markdown": build_project_budget_markdown(budget_structured),
         }
         llm_parts_ok += 1
-        meta["parts"]["budget_projet"] = "llm"
+        if wf4b_result.get("agent_id"):
+            meta["parts"]["budget_projet"] = f"llm_agent:{wf4b_result.get('agent_id')}"
+        else:
+            meta["parts"]["budget_projet"] = "llm"
     else:
         meta["parts"]["budget_projet"] = f"fallback:{wf4b_result.get('error', 'llm_error')}"
 
@@ -647,6 +938,7 @@ def resolve_wf4_outputs(
                 "provider": active_provider,
                 "model": active_model,
                 "fallback_used": llm_parts_ok < 3,
+                "budget_project_agent_id": wf4b_result.get("agent_id", ""),
                 "wf4a_usage": wf4a_result.get("usage", {}),
                 "wf4b_usage": wf4b_result.get("usage", {}),
                 "wf4c_usage": wf4c_result.get("usage", {}),
@@ -660,6 +952,7 @@ def resolve_wf4_outputs(
             "llm_error": "wf4_llm_inexploitable",
             "provider": active_provider,
             "model": active_model,
+            "budget_project_agent_id": wf4b_result.get("agent_id", ""),
             "wf4a_usage": wf4a_result.get("usage", {}),
             "wf4b_usage": wf4b_result.get("usage", {}),
             "wf4c_usage": wf4c_result.get("usage", {}),

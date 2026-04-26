@@ -39,6 +39,22 @@ Elle permet deja :
 - pont local de donnees comparables entre `WF2a` et `WF2b`
 - premier `WF3 local`
 
+### Integration agent budget projet Mistral
+
+Avancee majeure recente :
+- `WF4B` peut maintenant passer par un agent Mistral dedie si `MISTRAL_AGENT_BUDGET_PROJET_ID` est defini
+- integration branchee sans casser le flux existant :
+  - si l'agent est configure et le provider actif est `mistral`, l'app tente l'appel agent pour le budget projet
+  - sinon elle garde l'appel direct modele classique
+  - en cas d'echec ou de schema recopie au lieu des donnees, fallback automatique conserve
+- l'app accepte maintenant deux formes de sortie budget :
+  - format budget simple actuel (`charges` / `produits`)
+  - format plus institutionnel (`sections_charges` / `sections_produits`)
+
+Decision utile a retenir :
+- l'agent Mistral budget projet est une brique experimentale de `WF4B`, pas encore la voie unique
+- tant que l'agent n'est pas parfaitement fiable, le fallback budget de l'app doit rester actif
+
 ## Ce qui a ete fait
 
 ### Interface
@@ -745,7 +761,7 @@ Le projet supporte maintenant aussi `mistral` comme provider LLM :
 
 Pourquoi ce choix :
 - `Mistral Small 4` est documente comme modele courant sur la doc officielle Mistral
-- `Ministral 8B` reste techniquement selectable via `MISTRAL_MODEL="ministral-8b-2410"`
+- `Ministral 8B` n'est plus retenu dans l'application car il s'est montre moins fiable sur les sorties JSON strictes de `WF4`
 - mais il est documente comme deprecie, donc il ne doit pas etre le choix par defaut
 
 Etat de validation :
@@ -936,3 +952,107 @@ Fichiers exportes :
 Effet produit :
 - meme si le navigateur integre telecharge mal, l'utilisateur dispose d'une voie d'export fiable
 - les livrables retravailles dans l'UI peuvent etre recuperes localement sans ambiguite
+
+## Piste architecture agents a garder pour plus tard
+
+Idee validee en phase d'ideation, mais **pas encore implementee** car les agents ne sont pas encore configures.
+
+Orientation retenue a ce stade :
+- **pas d'orchestrateur explicite en v1**
+- branchement direct des agents livrables sur le bundle commun produit par `WF1/WF2/WF3`
+- un **agent final de relecture et coherence** seulement apres generation
+
+Architecture cible v1 :
+- `WF1/WF2/WF3` produisent un paquet commun de donnees normalisees
+- `Agent Presentation Projet` genere la presentation projet
+- `Agent Budget Projet` genere la trame budget projet
+- `Agent Budget Structure` ne s'execute que si `budget_structure_required == true`
+- `Agent Relecture / Coherence` verifie les contradictions, trous et incoherences entre livrables
+
+Pourquoi cette option a ete jugee pertinente :
+- moins de couches qu'un orchestrateur dedie
+- moins de friction technique et de routage
+- plus simple a tester agent par agent
+- plus lisible pour une v1
+- suffisamment robuste si tous les agents lisent le **meme bundle commun**
+
+Vigilances a garder en tete :
+- eviter la duplication de logique entre agents
+- garder une source de verite unique pour les donnees d'entree
+- ne pas laisser chaque agent reinterpretter differemment les memes signaux metier
+- laisser l'agent de relecture arbitrer les ecarts et signaler les zones a confirmer
+
+Quand activer cette architecture :
+- une fois la configuration multi-agents disponible
+- une fois le bundle `WF1/WF2/WF3` juge assez stable
+- avant de passer a une industrialisation plus lourde type orchestrateur / graphe d'agents
+
+Decision memoire :
+- **v1 recommandee** : agents directs par livrable + agent final de coherence
+- **v2 eventuelle** : orchestrateur explicite seulement si le nombre de livrables, de branches conditionnelles ou d'outils augmente fortement
+
+## Fiabilisation des livrables WF4 : presentation + budgets
+
+Un nouveau jalon de qualite a ete pose sur les livrables de candidature.
+
+### Presentation projet
+
+La generation `WF4A` ne repose plus seulement sur un enrichissement uniforme.
+
+Ce qui a ete ajoute :
+- une logique de **type de section** :
+  - `resume`
+  - `structure`
+  - `contexte`
+  - `publics`
+  - `methodologie`
+  - `moyens`
+  - `budget`
+  - `pieces`
+- pour chaque type, des **consignes metier dediees** sont injectees dans le prompt section par section
+- l'objectif est de produire des sections plus denses, plus pertinentes et moins generiques
+
+Effet attendu :
+- moins de texte "moyen" ou interchangeable
+- plus de coherence entre le titre de section et son contenu
+- une meilleure transformation des donnees brutes en vrai brouillon de dossier
+
+### Budget projet
+
+Le budget projet a encore ete renforce :
+- nouvelle ligne sur la documentation / valorisation finale
+- nouvelle ligne sur les valorisations en nature si elles sont acceptables
+- notes budgetaires plus explicites :
+  - montant detecte dans les sources
+  - besoin de clarifier budget total vs subvention demandee
+  - cofinancements reperes
+  - adaptation a la trame exacte du financeur
+
+Effet attendu :
+- trame plus proche d'un vrai budget financeur
+- moins d'ambiguite sur les montants
+- meilleure reprise manuelle dans Excel / CSV
+
+### Budget structure
+
+Le budget structure a ete fiabilise lui aussi :
+- meilleure differenciation avec le budget projet
+- nouvelles lignes plus credibles sur :
+  - communication institutionnelle
+  - reports / reserves / fonds associatifs
+- commentaires mieux relies :
+  - au territoire d'implantation
+  - aux capacites de la structure
+  - aux references de la structure
+
+Effet attendu :
+- un budget structure plus utile quand il est reellement requis
+- moins de confusion entre charges de fonctionnement et charges projet
+
+### Robustesse technique
+
+Un ajustement a aussi ete fait dans la normalisation des budgets :
+- prise en charge de `montant` **ou** `montant_previsionnel`
+
+But :
+- eviter de perdre des montants si le modele ne respecte pas exactement le meme nom de champ

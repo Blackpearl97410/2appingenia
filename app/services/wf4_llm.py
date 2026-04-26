@@ -43,7 +43,7 @@ def _collect_field_sources(block: dict[str, object]) -> list[dict[str, str]]:
                     )
     return collected
 
-from app.services.llm_client import call_llm_message, parse_json_response
+from app.services.llm_client import call_llm_message, call_mistral_agent_message, load_llm_settings, parse_json_response
 
 
 WF4A_SYSTEM_PROMPT = """
@@ -423,6 +423,15 @@ def _build_wf4_payload(
     )
 
 
+def _looks_like_json_schema_payload(payload: dict[str, object]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    schema_markers = {"type", "properties", "required", "title"}
+    if schema_markers.issubset(set(payload.keys())):
+        return True
+    return False
+
+
 WF4A_SECTION_SYSTEM_PROMPT = """
 Rôle
 Tu es un rédacteur senior en ingénierie de projets et financement public, spécialisé dans la rédaction de sections détaillées de dossiers de candidature à partir de matières documentaires déjà extraites.
@@ -434,6 +443,7 @@ Contexte
 Tu reçois :
 - le contexte global déjà extrait du dossier, du client et du projet
 - une section cible avec son titre, son objectif, son contenu initial et son statut
+- un type de section et des consignes métier spécifiques à cette section
 - des attendus de l'appel à projet
 
 Tu dois améliorer cette section sans inventer d'information. Si certaines données manquent, tu dois le signaler explicitement dans le texte avec `A_COMPLETER` ou `A_CONFIRMER`.
@@ -450,9 +460,19 @@ Tu privilégies les données internes fournies. Aucune recherche externe n'est a
 
 Processus de travail
 1. Lire le titre et l'objectif de la section cible.
-2. Identifier dans les données sources les éléments réellement pertinents pour cette section.
-3. Réécrire la section sous forme d'un texte dense, fluide et exploitable.
-4. Intégrer explicitement les données disponibles : objectifs, actions, publics, territoire, calendrier, moyens, partenaires, livrables, budget, contraintes, selon la section.
+2. Lire le `section_type` et les `consignes_section` fournies dans les données d'entrée.
+3. Identifier dans les données sources les éléments réellement pertinents pour cette section.
+4. Réécrire la section sous forme d'un texte dense, fluide et exploitable.
+5. Intégrer explicitement les données disponibles : objectifs, actions, publics, territoire, calendrier, moyens, partenaires, livrables, budget, contraintes, selon la section.
+6. Respecter la logique attendue du type de section :
+   - `resume` : vue d'ensemble concise mais rédigée, avec finalité du projet, public, territoire, temporalité et besoin
+   - `structure` : crédibilité de la structure porteuse, compétences, ancrage, références et capacité de mise en œuvre
+   - `contexte` : besoin, diagnostic, enjeux, problématique et réponse proposée
+   - `publics` : bénéficiaires, territoire, volume, ciblage et impact attendu
+   - `methodologie` : déroulé opérationnel, phases, calendrier, gouvernance, suivi
+   - `moyens` : équipe, partenaires, ressources techniques, répartition des rôles
+   - `budget` : logique économique du projet, cohérence charges/produits, cofinancement, viabilité
+   - `pieces` : points à compléter, annexes, justificatifs et validations requises
 5. Si une information importante manque, l'indiquer proprement dans le texte.
 6. Retourner une sortie courte mais substantielle : au moins un vrai paragraphe développé, voire plusieurs si la matière le permet.
 
@@ -476,6 +496,8 @@ Contraintes / garde-fous
 - Le texte doit ressembler à un brouillon de dossier, pas à une note interne.
 - Garde un style professionnel, clair, rédigé et directement exploitable.
 - Si la matière est riche, vise 8 à 12 phrases.
+- Evite les phrases télégraphiques de type `Titre : ...`, `Elements detectes : ...`, `Dates : ...` comme contenu principal.
+- Pour les sections `contexte`, `methodologie`, `moyens` et `budget`, vise si possible 2 à 4 paragraphes courts plutôt qu'un bloc unique compact.
 - Réponds uniquement avec du JSON brut.
 
 Format de sortie attendu
@@ -488,6 +510,87 @@ Format de sortie attendu
   "points_de_vigilance": ["string"]
 }
 """.strip()
+
+
+SECTION_TYPE_GUIDANCE = {
+    "resume": {
+        "keywords": ("resume",),
+        "guidance": [
+            "Produire une synthèse narrative du projet, pas une liste de constats.",
+            "Inclure si possible le besoin traité, le public visé, le territoire, la durée, les actions principales et l'ambition globale.",
+            "Le résultat doit pouvoir servir d'ouverture de dossier ou de note de synthèse.",
+        ],
+    },
+    "structure": {
+        "keywords": ("structure", "porteuse"),
+        "guidance": [
+            "Décrire la structure porteuse comme un acteur crédible : forme juridique, activité, ancrage territorial, références, équipe, capacités de gestion.",
+            "Mettre en avant les éléments qui rassurent un financeur sur la capacité à porter le projet.",
+            "Quand les références manquent, l'indiquer explicitement sans masquer le besoin de consolidation.",
+        ],
+    },
+    "contexte": {
+        "keywords": ("contexte", "besoin", "description"),
+        "guidance": [
+            "Décrire le problème ou besoin auquel répond le projet, puis la réponse proposée.",
+            "Transformer les éléments détectés en texte rédigé avec logique de diagnostic et de justification.",
+            "Faire ressortir les enjeux pour le territoire, le secteur ou les bénéficiaires.",
+        ],
+    },
+    "publics": {
+        "keywords": ("public", "beneficiaire", "territoire"),
+        "guidance": [
+            "Préciser qui sont les bénéficiaires, où se déroule le projet et quels effets sont attendus.",
+            "Si possible, évoquer le ciblage, le volume, les modalités de mobilisation et la valeur pour le territoire.",
+            "Si le volume ou les critères de ciblage manquent, écrire A_COMPLETER dans le texte de manière propre.",
+        ],
+    },
+    "methodologie": {
+        "keywords": ("methodologie", "mise en oeuvre", "calendrier"),
+        "guidance": [
+            "Décrire un déroulé opérationnel en phases ou étapes claires.",
+            "Relier explicitement les dates, jalons, actions et séquences d'exécution.",
+            "Faire apparaître préparation, réalisation, suivi, évaluation et restitution si les sources le permettent.",
+        ],
+    },
+    "moyens": {
+        "keywords": ("moyens", "partenariat"),
+        "guidance": [
+            "Décrire l'équipe mobilisée, les moyens techniques, les partenaires et la répartition des rôles.",
+            "Mettre en avant les ressources concrètes qui rendent le projet faisable.",
+            "Ne pas se limiter à citer des noms : expliquer à quoi servent ces moyens dans le projet.",
+        ],
+    },
+    "budget": {
+        "keywords": ("budget", "financement"),
+        "guidance": [
+            "Présenter la logique financière du projet : grandes charges, produits, cofinancement, subvention sollicitée, équilibre visé.",
+            "Faire apparaître les contraintes de l'appel si elles sont détectées : plafond, taux, autofinancement, devis, justificatifs.",
+            "Le texte doit accompagner la trame budget, pas répéter simplement des postes.",
+        ],
+    },
+    "pieces": {
+        "keywords": ("piece", "annexe", "completer"),
+        "guidance": [
+            "Transformer la liste des manques en checklist structurée et actionnable.",
+            "Faire ressortir les pièces à produire, les validations à obtenir et les zones à confirmer.",
+            "Le résultat doit aider à finaliser le dossier avant dépôt.",
+        ],
+    },
+}
+
+
+def infer_presentation_section_type(title: str) -> str:
+    normalized = title.lower().strip()
+    for section_type, config in SECTION_TYPE_GUIDANCE.items():
+        if any(keyword in normalized for keyword in config["keywords"]):
+            return section_type
+    return "contexte"
+
+
+def get_section_guidance(section_type: str) -> list[str]:
+    config = SECTION_TYPE_GUIDANCE.get(section_type, {})
+    return list(config.get("guidance", []))
 
 
 def request_wf4a_llm_payload(
@@ -515,6 +618,8 @@ def request_wf4a_llm_payload(
         }
 
     parsed_payload, parse_error = parse_json_response(str(llm_result.get("text", "")))
+    if parse_error is None and isinstance(parsed_payload, dict) and _looks_like_json_schema_payload(parsed_payload):
+        parse_error = "schema_reproduit_au_lieu_des_donnees"
     return {
         "ok": parse_error is None and parsed_payload is not None,
         "error": parse_error,
@@ -533,13 +638,30 @@ def request_wf4b_llm_payload(
     provider_override: str | None = None,
     model_override: str | None = None,
 ) -> dict[str, object]:
-    llm_result = call_llm_message(
-        WF4B_SYSTEM_PROMPT,
-        _build_wf4_payload(wf2a_structured, wf2b_structured, wf3_analysis),
-        max_tokens=5000,
-        provider_override=provider_override,
-        model_override=model_override,
-    )
+    payload_text = _build_wf4_payload(wf2a_structured, wf2b_structured, wf3_analysis)
+    settings = load_llm_settings(provider_override=provider_override, model_override=model_override)
+    budget_project_agent_id = settings.mistral_budget_project_agent_id.strip()
+
+    if settings.provider == "mistral" and budget_project_agent_id:
+        agent_user_prompt = (
+            "Produis uniquement les donnees finales du budget projet, conformes au schema JSON de l'agent. "
+            "Ne recopie jamais le schema. Ne retourne jamais `type`, `properties`, `required` ou `title`.\n\n"
+            f"BUNDLE:\n{payload_text}"
+        )
+        llm_result = call_mistral_agent_message(
+            budget_project_agent_id,
+            agent_user_prompt,
+            max_tokens=5000,
+            provider_override=provider_override,
+        )
+    else:
+        llm_result = call_llm_message(
+            WF4B_SYSTEM_PROMPT,
+            payload_text,
+            max_tokens=5000,
+            provider_override=provider_override,
+            model_override=model_override,
+        )
     if not llm_result.get("ok"):
         return {
             "ok": False,
@@ -548,6 +670,7 @@ def request_wf4b_llm_payload(
             "usage": llm_result.get("usage", {}),
             "provider": llm_result.get("provider", ""),
             "model": llm_result.get("model", ""),
+            "agent_id": budget_project_agent_id if settings.provider == "mistral" and budget_project_agent_id else "",
         }
 
     parsed_payload, parse_error = parse_json_response(str(llm_result.get("text", "")))
@@ -559,6 +682,7 @@ def request_wf4b_llm_payload(
         "provider": llm_result.get("provider", ""),
         "model": llm_result.get("model", ""),
         "raw_text": llm_result.get("text", ""),
+        "agent_id": budget_project_agent_id if settings.provider == "mistral" and budget_project_agent_id else "",
     }
 
 

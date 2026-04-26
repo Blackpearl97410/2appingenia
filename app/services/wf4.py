@@ -483,6 +483,11 @@ def build_project_budget_template(wf2b_structured: dict[str, object], wf3_analys
             "montant_previsionnel": "",
             "commentaire": "Verifier si les frais de structure sont autorises ou plafonnes par l'appel",
         },
+        {
+            "poste": "1.9 Documentation, capitalisation et valorisation finale",
+            "montant_previsionnel": "",
+            "commentaire": _build_budget_comment(livrables if livrables != "A completer" else "", "Edition, restitution, publication, trace finale du projet"),
+        },
     ]
     produits = [
         {
@@ -515,6 +520,11 @@ def build_project_budget_template(wf2b_structured: dict[str, object], wf3_analys
             "montant_previsionnel": "",
             "commentaire": "Autres concours ou valorisations a confirmer",
         },
+        {
+            "poste": "2.7 Valorisation en nature ou contributions volontaires",
+            "montant_previsionnel": "",
+            "commentaire": "A utiliser seulement si ce mode de valorisation est accepte par le financeur",
+        },
     ]
 
     notes = [
@@ -530,6 +540,15 @@ def build_project_budget_template(wf2b_structured: dict[str, object], wf3_analys
         notes.append("Actions budgetaires a traiter : " + " | ".join(budget_signals["budget_actions"][:6]))
     if budget_signals["required_pieces"]:
         notes.append("Pieces / justificatifs budgetaires a verifier : " + " | ".join(budget_signals["required_pieces"][:6]))
+    if amount != "A completer":
+        notes.append(
+            "Montant repere dans les sources : "
+            + amount
+            + ". Verifier s'il s'agit du budget total, de la subvention demandee ou d'un cofinancement."
+        )
+    if cofinancements:
+        notes.append("Cofinancements reperes : " + cofinancements)
+    notes.append("Ajouter ou supprimer des lignes selon la trame exacte du financeur, les devis disponibles et la logique reelle du projet.")
 
     return {
         "titre": "Budget previsionnel du projet",
@@ -541,12 +560,45 @@ def build_project_budget_template(wf2b_structured: dict[str, object], wf3_analys
 
 
 def build_project_budget_markdown(budget: dict[str, Any]) -> str:
-    lines = [
-        f"# {budget.get('titre', 'Budget previsionnel du projet')}",
-        "",
-        "| Charges | Montant previsionnel | Produits | Montant previsionnel |",
-        "| --- | ---: | --- | ---: |",
-    ]
+    metadata = budget.get("metadata", {}) if isinstance(budget.get("metadata", {}), dict) else {}
+    lines = [f"# {budget.get('titre', 'Budget previsionnel du projet')}", ""]
+
+    description = str(metadata.get("description", "")).strip()
+    synthese = str(metadata.get("synthese_financements", "")).strip()
+    statut = str(metadata.get("statut", "")).strip()
+    periode = metadata.get("periode", {}) if isinstance(metadata.get("periode", {}), dict) else {}
+    financeur = metadata.get("financeur_principal", {}) if isinstance(metadata.get("financeur_principal", {}), dict) else {}
+    structure = metadata.get("structure_porteuse", {}) if isinstance(metadata.get("structure_porteuse", {}), dict) else {}
+
+    if description:
+        lines.extend([description, ""])
+    if synthese:
+        lines.extend([f"**Synthese financements** : {synthese}", ""])
+    if statut:
+        lines.append(f"**Statut budgetaire** : {statut}")
+    if isinstance(periode, dict) and (periode.get("debut") or periode.get("fin")):
+        lines.append(f"**Periode** : {periode.get('debut', 'A_COMPLETER')} -> {periode.get('fin', 'A_COMPLETER')}")
+    if isinstance(financeur, dict) and financeur:
+        financeur_bits = [str(financeur.get("nom", "")).strip(), str(financeur.get("type", "")).strip()]
+        if str(financeur.get("taux_max", "")).strip():
+            financeur_bits.append(f"taux max {financeur.get('taux_max')}")
+        if str(financeur.get("plafond", "")).strip():
+            financeur_bits.append(f"plafond {financeur.get('plafond')}")
+        lines.append("**Financeur principal** : " + " | ".join(bit for bit in financeur_bits if bit))
+    if isinstance(structure, dict) and structure:
+        structure_bits = [str(structure.get("nom", "")).strip(), str(structure.get("forme_juridique", "")).strip()]
+        if str(structure.get("territoire", "")).strip():
+            structure_bits.append(str(structure.get("territoire", "")).strip())
+        lines.append("**Structure porteuse** : " + " | ".join(bit for bit in structure_bits if bit))
+    if len(lines) > 2:
+        lines.append("")
+
+    lines.extend(
+        [
+            "| Section charge | Charges | Montant previsionnel | Section produit | Produits | Montant previsionnel |",
+            "| --- | --- | ---: | --- | --- | ---: |",
+        ]
+    )
 
     charges = list(budget.get("charges", []))
     produits = list(budget.get("produits", []))
@@ -555,7 +607,9 @@ def build_project_budget_markdown(budget: dict[str, Any]) -> str:
         charge = charges[index] if index < len(charges) else {"poste": "", "montant_previsionnel": ""}
         produit = produits[index] if index < len(produits) else {"poste": "", "montant_previsionnel": ""}
         lines.append(
-            f"| {charge.get('poste', '')} | {charge.get('montant_previsionnel', '')} | "
+            f"| {charge.get('section', '') or charge.get('sous_section', '')} | "
+            f"{charge.get('poste', '')} | {charge.get('montant_previsionnel', '')} | "
+            f"{produit.get('section', '') or produit.get('sous_section', '')} | "
             f"{produit.get('poste', '')} | {produit.get('montant_previsionnel', '')} |"
         )
 
@@ -573,30 +627,36 @@ def build_structure_budget_template(wf2b_structured: dict[str, object], wf3_anal
     profil_client = wf2b_structured.get("profil_client", {})
     capacities = _join_field_values(profil_client.get("capacites_porteuses", []), default="")
     activities = _join_field_values(profil_client.get("activites", []), default="")
+    implantation = _field_value(profil_client.get("territoire_implantation"))
+    references = _join_field_values(profil_client.get("historique_references", []), default="")
     budget_signals = _collect_budget_signals(wf3_analysis)
 
     return {
         "titre": "Budget previsionnel de structure",
         "colonnes": ["Charges de structure", "Montant previsionnel", "Produits de structure", "Montant previsionnel"],
         "charges": [
-            {"poste": "1.1 Personnel permanent et encadrement", "montant_previsionnel": "", "commentaire": capacities or "A completer"},
+            {"poste": "1.1 Personnel permanent et encadrement", "montant_previsionnel": "", "commentaire": _build_budget_comment(capacities, "Direction, coordination, administration") or "A completer"},
             {"poste": "1.2 Charges sociales et taxes liees a l'emploi", "montant_previsionnel": "", "commentaire": "A completer"},
-            {"poste": "1.3 Loyers, fluides, assurances et frais fixes", "montant_previsionnel": "", "commentaire": "A completer"},
+            {"poste": "1.3 Loyers, fluides, assurances et frais fixes", "montant_previsionnel": "", "commentaire": implantation if implantation != "A completer" else "A completer"},
             {"poste": "1.4 Fonctionnement courant et maintenance", "montant_previsionnel": "", "commentaire": activities or "A completer"},
             {"poste": "1.5 Equipements, amortissements ou renouvellements", "montant_previsionnel": "", "commentaire": capacities or "A completer"},
-            {"poste": "1.6 Autres charges de structure", "montant_previsionnel": "", "commentaire": "A completer"},
+            {"poste": "1.6 Communication institutionnelle et vie associative", "montant_previsionnel": "", "commentaire": references or "A completer"},
+            {"poste": "1.7 Autres charges de structure", "montant_previsionnel": "", "commentaire": "A completer"},
         ],
         "produits": [
             {"poste": "2.1 Subventions de fonctionnement", "montant_previsionnel": "", "commentaire": "A completer"},
             {"poste": "2.2 Recettes propres et cotisations", "montant_previsionnel": "", "commentaire": "A completer"},
             {"poste": "2.3 Prestations, ventes ou productions", "montant_previsionnel": "", "commentaire": activities or "A completer"},
             {"poste": "2.4 Partenariats, mecenat ou apports prives", "montant_previsionnel": "", "commentaire": "A completer"},
-            {"poste": "2.5 Autres produits de structure", "montant_previsionnel": "", "commentaire": "A completer"},
+            {"poste": "2.5 Reports, reserves ou fonds associatifs mobilises", "montant_previsionnel": "", "commentaire": "A completer"},
+            {"poste": "2.6 Autres produits de structure", "montant_previsionnel": "", "commentaire": "A completer"},
         ],
         "notes": [
             "A produire seulement si le financeur demande un budget de structure ou un previsionnel de la structure porteuse.",
             "Verifier la coherence entre budget projet et budget structure.",
             "Dissocier clairement les charges / produits de structure de ceux du projet finance.",
+            "Faire apparaitre ici les charges fixes, ressources recurrentes et moyens permanents de la structure.",
+            "Ne pas dupliquer les depenses specifiquement imputees au budget projet.",
         ],
     }
 
