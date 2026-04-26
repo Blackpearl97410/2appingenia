@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 
 from app.services.wf2 import (
     VALID_CONFIDENCE,
@@ -467,6 +468,52 @@ def _normalize_budget_rows(items: object) -> list[dict[str, object]]:
     return rows
 
 
+def _parse_budget_number(value: object) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    upper = text.upper()
+    if upper in {"A_COMPLETER", "A COMPLETER", "A_CONFIRMER", "CONFIRME"}:
+        return None
+    cleaned = text.replace("\u202f", "").replace("\xa0", "").replace(" ", "")
+    cleaned = cleaned.replace("EUR", "").replace("€", "")
+    if "," in cleaned and "." in cleaned:
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    elif "," in cleaned:
+        cleaned = cleaned.replace(",", ".")
+    cleaned = re.sub(r"[^0-9.\\-]", "", cleaned)
+    if not cleaned or cleaned in {"-", ".", "-."}:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _format_budget_number(value: float) -> str:
+    rounded = round(value, 2)
+    if rounded.is_integer():
+        return f"{int(rounded)} EUR"
+    return f"{rounded:.2f} EUR"
+
+
+def _enrich_budget_amounts(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    enriched: list[dict[str, object]] = []
+    for row in rows:
+        row_copy = dict(row)
+        current_amount = str(row_copy.get("montant_previsionnel", "")).strip()
+        if current_amount in {"", "A_COMPLETER", "A completer"}:
+            comment = str(row_copy.get("commentaire", "")).strip()
+            qty_match = re.search(r"Quantite=([^|]+)", comment)
+            unit_cost_match = re.search(r"Cout unitaire=([^|]+)", comment)
+            qty = _parse_budget_number(qty_match.group(1).strip() if qty_match else "")
+            unit_cost = _parse_budget_number(unit_cost_match.group(1).strip() if unit_cost_match else "")
+            if qty is not None and unit_cost is not None:
+                row_copy["montant_previsionnel"] = _format_budget_number(qty * unit_cost)
+        enriched.append(row_copy)
+    return enriched
+
+
 def _extract_budget_root(payload: dict[str, object]) -> dict[str, object]:
     payload = payload if isinstance(payload, dict) else {}
     nested = payload.get("budget_projet")
@@ -481,6 +528,76 @@ def _coerce_string_list(value: object) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _normalize_budget_group_dict(groups: object, *, kind: str) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    if not isinstance(groups, dict):
+        return rows
+
+    for _, group in groups.items():
+        if not isinstance(group, dict):
+            continue
+        section_name = str(group.get("intitule", "")).strip() or str(group.get("section", "")).strip()
+        details = group.get("details", [])
+        if not isinstance(details, list):
+            continue
+
+        for detail in details:
+            if not isinstance(detail, dict):
+                continue
+
+            base_comment_parts = [
+                str(detail.get("remarque", "")).strip(),
+                str(detail.get("commentaire", "")).strip(),
+                str(detail.get("description", "")).strip(),
+            ]
+            quantite = str(detail.get("quantite", "")).strip()
+            unite = str(detail.get("unite", "")).strip()
+            cout_unitaire = str(detail.get("cout_unitaire", "")).strip()
+            if quantite or unite or cout_unitaire:
+                base_comment_parts.append(
+                    "Quantite="
+                    f"{quantite or 'A_COMPLETER'} | "
+                    f"Unite={unite or 'A_COMPLETER'} | "
+                    f"Cout unitaire={cout_unitaire or 'A_COMPLETER'}"
+                )
+
+            if kind == "charge":
+                rows.append(
+                    {
+                        "section": section_name,
+                        "poste": str(detail.get("poste", "")).strip() or section_name,
+                        "montant_previsionnel": (
+                            str(detail.get("montant", "")).strip()
+                            or str(detail.get("montant_total", "")).strip()
+                            or "A_COMPLETER"
+                        ),
+                        "commentaire": " | ".join(part for part in base_comment_parts if part),
+                        "statut": str(detail.get("statut", "")).strip(),
+                        "source": str(detail.get("financeur", "")).strip(),
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "section": section_name,
+                        "poste": str(detail.get("source", "")).strip()
+                        or str(detail.get("poste", "")).strip()
+                        or section_name,
+                        "montant_previsionnel": (
+                            str(detail.get("montant_sollicite", "")).strip()
+                            or str(detail.get("montant", "")).strip()
+                            or str(detail.get("montant_detecte", "")).strip()
+                            or "A_COMPLETER"
+                        ),
+                        "commentaire": " | ".join(part for part in base_comment_parts if part),
+                        "statut": str(detail.get("statut", "")).strip(),
+                        "source": str(detail.get("source", "")).strip(),
+                    }
+                )
+
+    return rows
 
 
 def _flatten_budget_section(section: object, *, kind: str) -> list[dict[str, object]]:
@@ -570,6 +687,7 @@ def _flatten_budget_section(section: object, *, kind: str) -> list[dict[str, obj
 
 def _normalize_budget_notes(payload: dict[str, object]) -> list[str]:
     notes = _dedup_strings([str(item) for item in payload.get("notes_budgetaires", [])])
+    notes.extend(_dedup_strings([str(item) for item in payload.get("vigilances", [])]))
 
     financeur = payload.get("financeur_principal", {})
     if isinstance(financeur, dict):
@@ -597,6 +715,20 @@ def _normalize_budget_notes(payload: dict[str, object]) -> list[str]:
     synthese = str(payload.get("synthese_financements", "")).strip() or str(payload.get("synthese_executive", "")).strip()
     if synthese:
         notes.append(synthese)
+    synthese_financement = payload.get("synthese_financement", {})
+    if isinstance(synthese_financement, dict):
+        for label, key in [
+            ("Montant total projet", "montant_total_projet"),
+            ("Montant subvention principale", "montant_subvention_CNM"),
+            ("Montant autofinancement", "montant_autofinancement"),
+            ("Montant cofinancements", "montant_cofinancements"),
+            ("Taux subvention principale", "taux_subvention_CNM"),
+            ("Taux autofinancement", "taux_autofinancement"),
+            ("Taux cofinancement", "taux_cofinancement"),
+        ]:
+            value = str(synthese_financement.get(key, "")).strip()
+            if value:
+                notes.append(f"{label} : {value}")
 
     analyse = payload.get("analyse_equilibre") or payload.get("analyse_budgetaire")
     if isinstance(analyse, str):
@@ -631,10 +763,90 @@ def _normalize_budget_notes(payload: dict[str, object]) -> list[str]:
     return _dedup_strings(notes)
 
 
+def _has_meaningful_budget_amount(row: dict[str, object]) -> bool:
+    value = str(row.get("montant_previsionnel", "")).strip()
+    return value not in {"", "A_COMPLETER", "A completer", "A_CONFIRMER"}
+
+
+def _merge_budget_rows(
+    primary_rows: list[dict[str, object]],
+    fallback_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    merged: list[dict[str, object]] = []
+    max_len = max(len(primary_rows), len(fallback_rows))
+    for index in range(max_len):
+        primary = primary_rows[index] if index < len(primary_rows) and isinstance(primary_rows[index], dict) else {}
+        fallback = fallback_rows[index] if index < len(fallback_rows) and isinstance(fallback_rows[index], dict) else {}
+        row = dict(fallback)
+        row.update(primary)
+        if not str(row.get("montant_previsionnel", "")).strip():
+            fallback_amount = str(fallback.get("montant_previsionnel", "")).strip()
+            if fallback_amount:
+                row["montant_previsionnel"] = fallback_amount
+        if str(row.get("montant_previsionnel", "")).strip() in {"", "A completer"}:
+            row["montant_previsionnel"] = "A_COMPLETER"
+        if not str(row.get("commentaire", "")).strip():
+            fallback_comment = str(fallback.get("commentaire", "")).strip()
+            if fallback_comment:
+                row["commentaire"] = fallback_comment
+        merged.append(row)
+    return merged
+
+
+def _row_richness_score(row: dict[str, object]) -> int:
+    score = 0
+    if str(row.get("poste", "")).strip():
+        score += 1
+    if str(row.get("section", "")).strip() or str(row.get("sous_section", "")).strip():
+        score += 1
+    if str(row.get("commentaire", "")).strip():
+        score += 1
+    if str(row.get("source", "")).strip():
+        score += 1
+    if _has_meaningful_budget_amount(row):
+        score += 3
+    return score
+
+
+def _prefer_richer_budget_rows(
+    primary_rows: list[dict[str, object]],
+    fallback_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    if not primary_rows:
+        return [dict(row) for row in fallback_rows]
+    if not fallback_rows:
+        return [dict(row) for row in primary_rows]
+
+    primary_meaningful = sum(1 for row in primary_rows if _has_meaningful_budget_amount(row))
+    fallback_meaningful = sum(1 for row in fallback_rows if _has_meaningful_budget_amount(row))
+
+    if primary_meaningful == 0 and fallback_meaningful > 0:
+        return _merge_budget_rows(fallback_rows, primary_rows)
+
+    merged: list[dict[str, object]] = []
+    max_len = max(len(primary_rows), len(fallback_rows))
+    for index in range(max_len):
+        primary = primary_rows[index] if index < len(primary_rows) and isinstance(primary_rows[index], dict) else {}
+        fallback = fallback_rows[index] if index < len(fallback_rows) and isinstance(fallback_rows[index], dict) else {}
+        chosen = primary if _row_richness_score(primary) >= _row_richness_score(fallback) else fallback
+        other = fallback if chosen is primary else primary
+        row = dict(other)
+        row.update(chosen)
+        if not str(row.get("montant_previsionnel", "")).strip():
+            row["montant_previsionnel"] = "A_COMPLETER"
+        merged.append(row)
+    return merged
+
+
 def _normalize_budget_payload(payload: dict[str, object], fallback_structured: dict[str, object]) -> dict[str, object]:
     payload = _extract_budget_root(payload)
     charges = _normalize_budget_rows(payload.get("charges", []))
     produits = _normalize_budget_rows(payload.get("produits", []))
+    budget_previsionnel = payload.get("budget_previsionnel", {})
+    if not charges and isinstance(budget_previsionnel, dict):
+        charges = _normalize_budget_group_dict(budget_previsionnel.get("charges", {}), kind="charge")
+    if not produits:
+        produits = _normalize_budget_group_dict(payload.get("produits", {}), kind="produit")
 
     if not charges:
         section_rows = []
@@ -685,7 +897,16 @@ def _normalize_budget_payload(payload: dict[str, object], fallback_structured: d
         return fallback_structured
 
     notes = _normalize_budget_notes(payload)
+    metadonnees = payload.get("metadonnees", {})
+    if isinstance(metadonnees, dict):
+        notes.extend(_dedup_strings(_coerce_string_list(metadonnees.get("points_bloquants", []))))
     totaux = payload.get("totaux", {}) if isinstance(payload.get("totaux", {}), dict) else {}
+    if not totaux and isinstance(budget_previsionnel, dict):
+        totaux = {
+            "total_charges": str(budget_previsionnel.get("total_charges", "")).strip(),
+            "total_produits": str(payload.get("total_produits", "")).strip(),
+            "equilibre_budgetaire": "",
+        }
     if not totaux and isinstance(sections, dict):
         charges_section = sections.get("charges", {})
         produits_section = sections.get("produits", {})
@@ -717,6 +938,42 @@ def _normalize_budget_payload(payload: dict[str, object], fallback_structured: d
         notes.extend(_dedup_strings([str(item) for item in analyse.get("alertes", [])]))
         notes.extend(_dedup_strings([str(item) for item in analyse.get("incoherences_detectees", [])]))
 
+    fallback_charges = list(fallback_structured.get("charges", []))
+    fallback_produits = list(fallback_structured.get("produits", []))
+    charges = _enrich_budget_amounts(_prefer_richer_budget_rows(charges, fallback_charges))
+    produits = _enrich_budget_amounts(_prefer_richer_budget_rows(produits, fallback_produits))
+
+    if not any(_has_meaningful_budget_amount(row) for row in charges + produits):
+        notes.append(
+            "Le budget agent ne fournit pas encore de montants exploitables. "
+            "La trame conserve donc la meilleure structure disponible pour completer manuellement."
+        )
+
+    financeur_principal = payload.get("financeur_principal", {})
+    if not isinstance(financeur_principal, dict) or not financeur_principal:
+        financeur_principal = (
+            {"nom": str(metadonnees.get("financeur_detecte", "")).strip()}
+            if isinstance(metadonnees, dict) and str(metadonnees.get("financeur_detecte", "")).strip()
+            else {}
+        )
+
+    structure_porteuse = payload.get("structure_porteuse", {})
+    if not isinstance(structure_porteuse, dict) or not structure_porteuse:
+        structure_porteuse = (
+            {
+                "nom": str(metadonnees.get("porteur_projet", "")).strip(),
+                "forme_juridique": str(metadonnees.get("forme_juridique", "")).strip(),
+                "territoire": str(metadonnees.get("territoire", "")).strip(),
+            }
+            if isinstance(metadonnees, dict)
+            and (
+                str(metadonnees.get("porteur_projet", "")).strip()
+                or str(metadonnees.get("forme_juridique", "")).strip()
+                or str(metadonnees.get("territoire", "")).strip()
+            )
+            else {}
+        )
+
     return {
         "titre": str(payload.get("titre_document", payload.get("titre", fallback_structured.get("titre", "Budget previsionnel")))).strip()
         or fallback_structured.get("titre", "Budget previsionnel"),
@@ -729,8 +986,9 @@ def _normalize_budget_payload(payload: dict[str, object], fallback_structured: d
             "synthese_financements": str(payload.get("synthese_financements", "")).strip(),
             "statut": str(payload.get("statut", "")).strip(),
             "periode": payload.get("periode", {}) if isinstance(payload.get("periode", {}), dict) else {},
-            "financeur_principal": payload.get("financeur_principal", {}) if isinstance(payload.get("financeur_principal", {}), dict) else {},
-            "structure_porteuse": payload.get("structure_porteuse", {}) if isinstance(payload.get("structure_porteuse", {}), dict) else {},
+            "financeur_principal": financeur_principal,
+            "structure_porteuse": structure_porteuse,
+            "metadonnees": payload.get("metadonnees", {}) if isinstance(payload.get("metadonnees", {}), dict) else {},
         },
         "points_a_completer": _dedup_strings(_coerce_string_list(payload.get("points_a_completer", []))),
     }
