@@ -395,6 +395,16 @@ def render_home() -> None:
 
     st.title("AAP Ingenia")
     st.caption("Back-office local de pre-analyse documentaire aligne sur les workflows Subly")
+    st.markdown(
+        """
+        <section class="app-hero" aria-label="Presentation de l'application">
+            <span class="app-kicker">Vue d'ensemble</span>
+            <h2>Un espace unique pour lire un appel, qualifier un dossier et preparer le livrable</h2>
+            <p>L'interface est organisee pour aller du diagnostic rapide vers les extractions detaillees, puis vers les livrables exploitables.</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
 
     add_vertical_space(1)
 
@@ -405,6 +415,15 @@ def render_home() -> None:
 
     add_vertical_space(1)
 
+    st.markdown(
+        """
+        <section class="app-panel" aria-label="Ce que permet cette version">
+            <h3>Ce que permet cette version</h3>
+            <p>Le coeur du flux est deja present : ingestion, extraction, matching et generation des livrables avec fallback local si besoin.</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
     st.markdown(
         """
         Cette version sert maintenant a valider un vrai flux local :
@@ -1571,6 +1590,8 @@ def render_global_summary(summary_map: dict[str, list[dict[str, str]]]) -> None:
     col2.metric("Blocs manquants", str(len(summary_map) - loaded_count))
     col3.metric("Documents charges", str(sum(len(value) for value in summary_map.values())))
 
+    st.caption("Ce recap aide a verifier d'un coup d'oeil si les 3 blocs sont assez fournis avant de lancer le pipeline.")
+
     for block_name, infos in summary_map.items():
         if not infos:
             st.warning(f"{block_name} : aucun document charge")
@@ -1582,6 +1603,7 @@ def render_global_summary(summary_map: dict[str, list[dict[str, str]]]) -> None:
 
 def render_cross_block_summary(summary: dict[str, str]) -> None:
     st.subheader("Synthese globale inter-blocs")
+    st.caption("Lecture rapide du niveau de preparation documentaire, des priorites detectees et des vigilances avant execution.")
 
     col1, col2 = st.columns(2)
     col1.metric("Preparation", summarize_readiness_label(summary.get("Etat global", "inconnu")))
@@ -1830,6 +1852,8 @@ def render_upload_block(title: str, help_text: str, uploader_key: str):
         st.info("Aucun document charge pour ce bloc.")
         return []
 
+    st.success(f"{len(uploaded_files)} document(s) charge(s) pour {title}.")
+
     for index, uploaded_file in enumerate(uploaded_files, start=1):
         process_uploaded_file(uploaded_file, title, index)
         if index < len(uploaded_files):
@@ -1850,8 +1874,23 @@ def render_upload_block(title: str, help_text: str, uploader_key: str):
 
 def render_upload() -> None:
     st.subheader("Upload structure en 3 blocs")
-    st.write(
-        "Le flux metier repose sur trois types de documents distincts : dossier, client et projet."
+    st.markdown(
+        """
+        <section class="app-hero" aria-label="Organisation du parcours d'upload">
+            <span class="app-kicker">Parcours de travail</span>
+            <h2>Charge d'abord les documents, puis pilote l'analyse depuis un seul ecran</h2>
+            <p>Les 3 blocs correspondent a des usages differents : le dossier definit les attendus, le client decrit la structure et le projet apporte la matiere operationnelle.</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        """
+        <section class="app-note" aria-label="Conseils de saisie">
+            <p><strong>Conseil de lisibilite :</strong> un ou deux documents bien cibles par bloc valent mieux qu'un depot massif et heterogene. Commence par le plus representatif, puis affine si besoin.</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
     )
 
     summary_map = {}
@@ -1923,6 +1962,7 @@ def render_upload() -> None:
 
     st.divider()
     st.markdown("### Execution pilotee")
+    st.caption("Cette zone pilote le mode d'analyse, le provider LLM et la persistance. Les choix ci-dessous n'affectent pas les fichiers deja charges.")
     llm_ready = describe_llm_readiness()
     supabase_ready = describe_supabase_readiness()
     use_llm_default = (

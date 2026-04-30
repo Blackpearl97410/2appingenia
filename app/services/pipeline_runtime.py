@@ -410,8 +410,8 @@ def _should_enrich_presentation_section(section: dict[str, object], enriched_cou
     )
     is_strategic = any(keyword in title for keyword in strategic_keywords)
     if is_strategic:
-        return len(content) < 1800 or status in {"partiel", "a_completer", "a_confirmer"}
-    return len(content) < 900 or status in {"partiel", "a_completer", "a_confirmer"}
+        return len(content) < 2400 or status in {"partiel", "a_completer", "a_confirmer"}
+    return len(content) < 1300 or status in {"partiel", "a_completer", "a_confirmer"}
 
 
 def _build_presentation_from_section_results(

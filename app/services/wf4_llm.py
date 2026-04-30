@@ -52,6 +52,37 @@ from app.services.llm_client import (
 )
 
 
+def _presentation_section_min_length(section_type: str) -> int:
+    major_sections = {"structure", "contexte", "publics", "methodologie", "moyens", "budget"}
+    if section_type in major_sections:
+        return 900
+    if section_type == "resume":
+        return 700
+    return 600
+
+
+def _payload_has_substantive_presentation_content(payload: dict[str, object], *, section_type: str | None = None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if section_type is not None:
+        content = str(payload.get("contenu_redige", "")).strip()
+        return len(content) >= _presentation_section_min_length(section_type)
+
+    sections = payload.get("sections", [])
+    if not isinstance(sections, list) or not sections:
+        return False
+    substantive_sections = 0
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        title = str(section.get("titre", "")).strip()
+        inferred_type = infer_presentation_section_type(title)
+        content = str(section.get("contenu_redige", "")).strip()
+        if len(content) >= _presentation_section_min_length(inferred_type):
+            substantive_sections += 1
+    return substantive_sections >= max(2, min(4, len(sections)))
+
+
 WF4A_SYSTEM_PROMPT = """
 Rôle
 Tu es un rédacteur senior en ingénierie de projets et financement public, spécialisé dans la transformation d’analyses documentaires en livrables de candidature exploitables. Tu maîtrises la rédaction de dossiers de subvention, d’appels à projets et de réponses structurées pour des financeurs publics, parapublics et sectoriels.
@@ -153,6 +184,11 @@ Contraintes / garde-fous
 - N'utilise pas des formulations de type `Resume initial`, `A transformer`, `A retravailler` comme contenu principal.
 - Utilise explicitement les extraits et champs detailles deja presents dans `matiere_source` pour enrichir les paragraphes.
 - Quand plusieurs points sources sont disponibles (objectifs, actions, publics, dates, partenaires, livrables), integre-les dans des paragraphes complets au lieu de les lister sechement.
+- Ne produis jamais une section majeure en 2 ou 3 phrases generiques seulement.
+- Pour chaque section majeure, vise plutot 120 a 220 mots quand la matiere le permet.
+- Chaque section doit comporter des elements concrets : qui, quoi, pour qui, ou, comment, avec quels moyens, dans quel calendrier, et avec quelle finalite, selon le cas.
+- Evite absolument les ouvertures vagues du type `Le projet vise a...` si elles ne sont pas ensuite developpees avec des faits ou des modalites d'action.
+- Si une section reste partiellement documentee, redige quand meme un vrai brouillon en explicitant les manques dans la prose, plutot qu'un texte minimal.
 - Réponds uniquement avec du JSON brut, sans markdown autour.
 
 Format de sortie attendu
@@ -505,6 +541,8 @@ Processus de travail
    - `pieces` : points à compléter, annexes, justificatifs et validations requises
 5. Si une information importante manque, l'indiquer proprement dans le texte.
 6. Retourner une sortie courte mais substantielle : au moins un vrai paragraphe développé, voire plusieurs si la matière le permet.
+7. Pour les sections majeures, viser un vrai brouillon exploitable de 2 a 4 paragraphes courts, pas un simple paragraphe d'ouverture.
+8. Quand les sources sont partielles, utiliser les informations certaines pour decrire le cadre, puis faire apparaitre explicitement les points a completer.
 
 Itération des données
 Avant de rédiger :
@@ -526,6 +564,8 @@ Contraintes / garde-fous
 - Le texte doit ressembler à un brouillon de dossier, pas à une note interne.
 - Garde un style professionnel, clair, rédigé et directement exploitable.
 - Si la matière est riche, vise 8 à 12 phrases.
+- Pour les sections `structure`, `contexte`, `publics`, `methodologie`, `moyens` et `budget`, vise en general 120 a 220 mots si les sources le permettent.
+- Evite les sorties trop courtes : une section de 2 a 4 phrases sera consideree comme insuffisante si la matiere source contient deja plusieurs signaux exploitables.
 - Evite les phrases télégraphiques de type `Titre : ...`, `Elements detectes : ...`, `Dates : ...` comme contenu principal.
 - Pour les sections `contexte`, `methodologie`, `moyens` et `budget`, vise si possible 2 à 4 paragraphes courts plutôt qu'un bloc unique compact.
 - Réponds uniquement avec du JSON brut.
@@ -643,7 +683,7 @@ def request_wf4a_llm_payload(
     llm_result = call_llm_message(
         WF4A_SYSTEM_PROMPT,
         _build_wf4_payload(wf2a_structured, wf2b_structured, wf3_analysis),
-        max_tokens=6000,
+        max_tokens=8500,
         provider_override=wf4a_provider_override,
         model_override=model_override,
     )
@@ -673,6 +713,36 @@ def request_wf4a_llm_payload(
         repair_model = str(repair_result.get("model", "")).strip()
     if parse_error is None and isinstance(parsed_payload, dict) and _looks_like_json_schema_payload(parsed_payload):
         parse_error = "schema_reproduit_au_lieu_des_donnees"
+    if parse_error is None and isinstance(parsed_payload, dict) and not _payload_has_substantive_presentation_content(parsed_payload):
+        retry_prompt = (
+            _build_wf4_payload(wf2a_structured, wf2b_structured, wf3_analysis)
+            + "\n\nConsigne renforcee : la premiere version etait trop succincte. "
+            "Retourne un JSON final avec des sections plus developpees, plus concretes et plus exploitables. "
+            "Pour chaque section majeure, vise plutot 120 a 220 mots si la matiere le permet, en paragraphes rediges et non en formule minimale."
+        )
+        retry_result = call_llm_message(
+            WF4A_SYSTEM_PROMPT,
+            retry_prompt,
+            max_tokens=9500,
+            provider_override=wf4a_provider_override,
+            model_override=model_override,
+        )
+        if retry_result.get("ok"):
+            retry_payload, retry_error = parse_json_response(str(retry_result.get("text", "")))
+            if retry_error is not None:
+                repair_result = repair_json_response_with_llm(
+                    str(retry_result.get("text", "")),
+                    provider_override=wf4a_provider_override,
+                    model_override=model_override,
+                )
+                if repair_result.get("ok") and isinstance(repair_result.get("payload"), dict):
+                    retry_payload = repair_result["payload"]
+                    retry_error = None
+            if retry_error is None and isinstance(retry_payload, dict) and _payload_has_substantive_presentation_content(retry_payload):
+                parsed_payload = retry_payload
+                llm_result = retry_result
+                parse_error = None
+
     return {
         "ok": parse_error is None and parsed_payload is not None,
         "error": parse_error,
@@ -812,7 +882,7 @@ def request_wf4a_section_payload(
     llm_result = call_llm_message(
         WF4A_SECTION_SYSTEM_PROMPT,
         json.dumps(payload, ensure_ascii=False, indent=2),
-        max_tokens=2200,
+        max_tokens=3200,
         provider_override=wf4a_provider_override,
         model_override=model_override,
     )
@@ -836,6 +906,43 @@ def request_wf4a_section_payload(
         if repair_result.get("ok") and isinstance(repair_result.get("payload"), dict):
             parsed_payload = repair_result["payload"]
             parse_error = None
+    section_type = str(section_payload.get("section_type", "")).strip() or infer_presentation_section_type(
+        str(section_payload.get("titre", "")).strip()
+    )
+    if parse_error is None and isinstance(parsed_payload, dict) and not _payload_has_substantive_presentation_content(
+        parsed_payload,
+        section_type=section_type,
+    ):
+        retry_payload = dict(payload)
+        retry_payload["consigne_renforcee"] = (
+            "La premiere version etait trop succincte. Developpe davantage cette section en 2 a 4 paragraphes courts, "
+            "avec des elements concrets et exploitables. Si des informations manquent, signale-les dans la prose sans reduire la section a une formule minimale."
+        )
+        retry_result = call_llm_message(
+            WF4A_SECTION_SYSTEM_PROMPT,
+            json.dumps(retry_payload, ensure_ascii=False, indent=2),
+            max_tokens=3600,
+            provider_override=wf4a_provider_override,
+            model_override=model_override,
+        )
+        if retry_result.get("ok"):
+            retry_parsed_payload, retry_parse_error = parse_json_response(str(retry_result.get("text", "")))
+            if retry_parse_error is not None:
+                repair_result = repair_json_response_with_llm(
+                    str(retry_result.get("text", "")),
+                    provider_override=wf4a_provider_override,
+                    model_override=model_override,
+                )
+                if repair_result.get("ok") and isinstance(repair_result.get("payload"), dict):
+                    retry_parsed_payload = repair_result["payload"]
+                    retry_parse_error = None
+            if retry_parse_error is None and isinstance(retry_parsed_payload, dict) and _payload_has_substantive_presentation_content(
+                retry_parsed_payload,
+                section_type=section_type,
+            ):
+                parsed_payload = retry_parsed_payload
+                llm_result = retry_result
+                parse_error = None
     return {
         "ok": parse_error is None and parsed_payload is not None,
         "error": parse_error,
