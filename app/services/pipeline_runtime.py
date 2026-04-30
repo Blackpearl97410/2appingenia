@@ -320,6 +320,18 @@ def _dedup_strings(items: list[str]) -> list[str]:
 
 def _normalize_presentation_payload(payload: dict[str, object], fallback_outputs: dict[str, object]) -> dict[str, object]:
     payload = payload if isinstance(payload, dict) else {}
+    fallback_sections = list(
+        fallback_outputs.get("livrables", {}).get("presentation_projet", {}).get("sections", [])
+    )
+    fallback_by_order: dict[int, dict[str, object]] = {}
+    fallback_by_title: dict[str, dict[str, object]] = {}
+    for index, fallback_section in enumerate(fallback_sections, start=1):
+        if not isinstance(fallback_section, dict):
+            continue
+        fallback_by_order[index] = fallback_section
+        fallback_title = str(fallback_section.get("section", "")).strip().lower()
+        if fallback_title:
+            fallback_by_title[fallback_title] = fallback_section
     sections = []
     raw_sections = payload.get("sections", [])
     if isinstance(raw_sections, list):
@@ -328,6 +340,7 @@ def _normalize_presentation_payload(payload: dict[str, object], fallback_outputs
             key=lambda item: int(item.get("ordre", 999) or 999),
         )
         for item in raw_sections:
+            ordre = int(item.get("ordre", 999) or 999)
             title = str(item.get("titre", "")).strip() or "Section"
             objective = str(item.get("objectif_section", "")).strip()
             body = str(item.get("contenu_redige", "")).strip() or "A_COMPLETER"
@@ -348,6 +361,9 @@ def _normalize_presentation_payload(payload: dict[str, object], fallback_outputs
                     "contenu": "\n\n".join(content_parts),
                 }
             )
+            fallback_section = fallback_by_order.get(ordre) or fallback_by_title.get(title.strip().lower())
+            if fallback_section:
+                sections[-1] = _prefer_richer_presentation_section(sections[-1], fallback_section)
 
     if not sections:
         return fallback_outputs["livrables"]["presentation_projet"]
@@ -383,11 +399,56 @@ def _normalize_single_presentation_section(payload: dict[str, object], fallback_
         content_parts.append("Points de vigilance : " + " | ".join(vigilances))
     if sources:
         content_parts.append("Sources : " + " | ".join(sources))
-    return {
+    normalized = {
         "section": titre,
         "statut": statut,
         "contenu": "\n\n".join(content_parts).strip() or str(fallback_section.get("contenu", "")).strip(),
     }
+    return _prefer_richer_presentation_section(normalized, fallback_section)
+
+
+def _extract_substantive_presentation_content(content: str) -> str:
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    kept_lines = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if lowered.startswith("objectif :"):
+            continue
+        if lowered.startswith("points de vigilance :"):
+            continue
+        if lowered.startswith("sources :"):
+            continue
+        kept_lines.append(line)
+    return "\n".join(kept_lines).strip()
+
+
+def _prefer_richer_presentation_section(
+    llm_section: dict[str, object],
+    fallback_section: dict[str, object],
+) -> dict[str, object]:
+    llm_content = _extract_substantive_presentation_content(str(llm_section.get("contenu", "")))
+    fallback_content = _extract_substantive_presentation_content(str(fallback_section.get("contenu", "")))
+    llm_status = str(llm_section.get("statut", "")).strip().lower()
+    fallback_status = str(fallback_section.get("statut", "")).strip().lower()
+
+    if not llm_content:
+        return dict(fallback_section)
+    if fallback_content:
+        llm_len = len(llm_content)
+        fallback_len = len(fallback_content)
+        if llm_len < 260 and fallback_len > llm_len:
+            return dict(fallback_section)
+        if fallback_len >= 700 and llm_len < int(fallback_len * 0.55):
+            return dict(fallback_section)
+        if llm_status in {"partiel", "a_completer", "a_confirmer"} and fallback_len > llm_len and fallback_status in {"partiel", "redige"}:
+            return dict(fallback_section)
+
+    return llm_section
 
 
 def _should_enrich_presentation_section(section: dict[str, object], enriched_count: int) -> bool:

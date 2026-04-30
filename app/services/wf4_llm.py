@@ -534,6 +534,7 @@ Processus de travail
    - `resume` : vue d'ensemble concise mais rédigée, avec finalité du projet, public, territoire, temporalité et besoin
    - `structure` : crédibilité de la structure porteuse, compétences, ancrage, références et capacité de mise en œuvre
    - `contexte` : besoin, diagnostic, enjeux, problématique et réponse proposée
+   - `actions` : contenu concret des actions, déroulé, activités prévues, logique d'intervention et articulation entre les temps du projet
    - `publics` : bénéficiaires, territoire, volume, ciblage et impact attendu
    - `methodologie` : déroulé opérationnel, phases, calendrier, gouvernance, suivi
    - `moyens` : équipe, partenaires, ressources techniques, répartition des rôles
@@ -607,6 +608,14 @@ SECTION_TYPE_GUIDANCE = {
             "Faire ressortir les enjeux pour le territoire, le secteur ou les bénéficiaires.",
         ],
     },
+    "actions": {
+        "keywords": ("action", "actions prevues", "programme", "activite", "activites"),
+        "guidance": [
+            "Décrire concrètement les actions prévues, leur enchaînement, leur contenu et leur finalité.",
+            "Faire apparaître ce qui sera réellement mis en oeuvre : ateliers, accompagnements, temps collectifs, production, diffusion, restitution, selon les sources.",
+            "Éviter les formulations vagues : chaque paragraphe doit préciser ce qui sera fait, pour qui, comment et dans quel cadre.",
+        ],
+    },
     "publics": {
         "keywords": ("public", "beneficiaire", "territoire"),
         "guidance": [
@@ -652,6 +661,8 @@ SECTION_TYPE_GUIDANCE = {
 
 def infer_presentation_section_type(title: str) -> str:
     normalized = title.lower().strip()
+    if "action" in normalized or "actions prevues" in normalized:
+        return "actions"
     for section_type, config in SECTION_TYPE_GUIDANCE.items():
         if any(keyword in normalized for keyword in config["keywords"]):
             return section_type
