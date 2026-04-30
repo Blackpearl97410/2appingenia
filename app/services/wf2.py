@@ -16,6 +16,10 @@ from app.services.parsers import (
 )
 
 
+def _dedup_strings(items: list[str]) -> list[str]:
+    return list(dict.fromkeys(item.strip() for item in items if str(item).strip()))
+
+
 VALID_CATEGORIES = {"obligatoire", "souhaitable", "bloquant", "interpretatif"}
 VALID_DOMAINS = {
     "administratif",
@@ -113,6 +117,91 @@ def detect_dossier_type(text: str) -> str:
     if "appel" in text or "aap" in text:
         return "aap"
     return "autre"
+
+
+def _extract_candidate_template_lines(text: str) -> list[str]:
+    lines = [line.strip(" \t-•") for line in text.splitlines()]
+    candidates: list[str] = []
+    rubric_keywords = (
+        "presentation",
+        "contexte",
+        "objectifs",
+        "objectif",
+        "public",
+        "beneficiaire",
+        "budget",
+        "calendrier",
+        "mise en oeuvre",
+        "moyens",
+        "partenariat",
+        "annexe",
+        "piece",
+        "evaluation",
+        "livrable",
+        "structure porteuse",
+    )
+    for line in lines:
+        compact = re.sub(r"\s+", " ", line).strip(" :;")
+        if not compact or len(compact) < 4 or len(compact) > 120:
+            continue
+        normalized = compact.lower()
+        if not re.match(r"^(?:\d+[.)-]?|[a-z][.)-]?|[-•])?\s*", line.lower()):
+            continue
+        if any(keyword in normalized for keyword in rubric_keywords):
+            candidates.append(compact)
+    return _dedup_strings(candidates)
+
+
+def detect_dossier_template_structure(payloads: list[dict[str, str]], combined_text: str) -> dict[str, object]:
+    text_lower = combined_text.lower()
+    source_document = payloads[0]["document_name"] if payloads else ""
+
+    trigger_patterns = [
+        "rubriques suivantes",
+        "plan de candidature",
+        "trame de reponse",
+        "trame de candidature",
+        "format attendu",
+        "presentation du projet",
+        "dossier devra comporter",
+        "le dossier comprend",
+        "cadre d'intervention",
+        "reglement de consultation",
+    ]
+    detected_signals = [pattern for pattern in trigger_patterns if pattern in text_lower]
+    rubric_candidates = _extract_candidate_template_lines(combined_text)
+
+    title = ""
+    if "cadre d'intervention" in text_lower:
+        title = "Cadre d'intervention du financeur"
+    elif "reglement de consultation" in text_lower:
+        title = "Reglement de consultation"
+    elif detected_signals:
+        title = "Trame specifique detectee dans le dossier"
+
+    required = len(rubric_candidates) >= 3 and bool(detected_signals)
+    confidence = "moyen" if required else "bas"
+    constraints: list[str] = []
+    if "ordre" in text_lower or "dans l'ordre suivant" in text_lower:
+        constraints.append("Respecter l'ordre des rubriques demandees")
+    if "nombre de pages" in text_lower or "nb de pages" in text_lower or "pages maximum" in text_lower:
+        constraints.append("Verifier les contraintes de longueur du livrable")
+    if "piece jointe" in text_lower or "annexe" in text_lower:
+        constraints.append("Prevoir les annexes ou pieces demandees dans la trame")
+
+    return {
+        "requise": required,
+        "detectee": required,
+        "confirmee": False,
+        "titre_trame": title,
+        "rubriques": rubric_candidates[:12],
+        "ordre_impose": any(signal in text_lower for signal in ["ordre", "dans l'ordre suivant"]),
+        "contraintes": constraints,
+        "source_document": source_document,
+        "source_texte": find_source_excerpt(combined_text, detected_signals[0]) if detected_signals else "",
+        "niveau_confiance": confidence,
+        "mode_extraction": "heuristique_preparee_pour_llm",
+    }
 
 
 def build_structured_criterion(
@@ -245,6 +334,19 @@ def extract_wf2a_structured(dossier_files) -> dict[str, object]:
 
     combined_text = "\n\n".join(payload["text"] for payload in payloads if payload["text"])
     metadata = extract_text_metadata(combined_text, "dossier_concatene.txt") if combined_text else {}
+    template_structure = detect_dossier_template_structure(payloads, combined_text) if combined_text else {
+        "requise": False,
+        "detectee": False,
+        "confirmee": False,
+        "titre_trame": "",
+        "rubriques": [],
+        "ordre_impose": False,
+        "contraintes": [],
+        "source_document": "",
+        "source_texte": "",
+        "niveau_confiance": "bas",
+        "mode_extraction": "heuristique_preparee_pour_llm",
+    }
 
     return {
         "criteres": criteres[:30],
@@ -256,6 +358,7 @@ def extract_wf2a_structured(dossier_files) -> dict[str, object]:
             "nb_criteres_extraits": len(criteres[:30]),
             "mode_extraction": "heuristique_preparee_pour_llm",
             "documents_sources": [payload["document_name"] for payload in payloads],
+            "trame_livrable_attendue": template_structure,
         },
         "llm_contract": {
             "categories_valides": sorted(VALID_CATEGORIES),
@@ -283,6 +386,70 @@ def build_field_value(
         "necessite_validation": validation_required or normalize_confidence(confidence) == "bas",
         "mode_extraction": "heuristique_preparee_pour_llm",
     }
+
+
+def normalize_dossier_template_metadata(raw: object) -> dict[str, object]:
+    if not isinstance(raw, dict):
+        raw = {}
+    rubriques = raw.get("rubriques", [])
+    contraintes = raw.get("contraintes", [])
+    return {
+        "requise": bool(raw.get("requise", False)),
+        "detectee": bool(raw.get("detectee", False)),
+        "confirmee": bool(raw.get("confirmee", False)),
+        "titre_trame": str(raw.get("titre_trame", "")).strip(),
+        "rubriques": _dedup_strings([str(item) for item in rubriques]) if isinstance(rubriques, list) else [],
+        "ordre_impose": bool(raw.get("ordre_impose", False)),
+        "contraintes": _dedup_strings([str(item) for item in contraintes]) if isinstance(contraintes, list) else [],
+        "source_document": str(raw.get("source_document", "")).strip(),
+        "source_texte": str(raw.get("source_texte", "")).strip(),
+        "niveau_confiance": normalize_confidence(str(raw.get("niveau_confiance", "moyen"))),
+        "mode_extraction": str(raw.get("mode_extraction", "heuristique_preparee_pour_llm")).strip() or "heuristique_preparee_pour_llm",
+    }
+
+
+def apply_dossier_template_override(
+    wf2a_structured: dict[str, object],
+    override: dict[str, object] | None = None,
+) -> dict[str, object]:
+    if not override:
+        return wf2a_structured
+
+    updated = dict(wf2a_structured)
+    metadata = dict(updated.get("metadata", {})) if isinstance(updated.get("metadata", {}), dict) else {}
+    current_template = normalize_dossier_template_metadata(metadata.get("trame_livrable_attendue", {}))
+
+    title = str(override.get("titre_trame", current_template.get("titre_trame", ""))).strip()
+    rubriques_raw = override.get("rubriques", current_template.get("rubriques", []))
+    rubriques = _dedup_strings([str(item) for item in rubriques_raw]) if isinstance(rubriques_raw, list) else _dedup_strings(
+        [part.strip() for part in str(rubriques_raw or "").splitlines()]
+    )
+    contraintes_raw = override.get("contraintes", current_template.get("contraintes", []))
+    contraintes = _dedup_strings([str(item) for item in contraintes_raw]) if isinstance(contraintes_raw, list) else _dedup_strings(
+        [part.strip() for part in str(contraintes_raw or "").splitlines()]
+    )
+    requise = bool(override.get("requise", current_template.get("requise", False)))
+    detectee = bool(override.get("detectee", current_template.get("detectee", False)))
+    confirmee = bool(override.get("confirmee", current_template.get("confirmee", False)))
+
+    metadata["trame_livrable_attendue"] = normalize_dossier_template_metadata(
+        {
+            **current_template,
+            "requise": requise,
+            "detectee": detectee,
+            "confirmee": confirmee,
+            "titre_trame": title,
+            "rubriques": rubriques,
+            "ordre_impose": bool(override.get("ordre_impose", current_template.get("ordre_impose", False))),
+            "contraintes": contraintes,
+            "source_document": str(override.get("source_document", current_template.get("source_document", ""))).strip() or current_template.get("source_document", ""),
+            "source_texte": str(override.get("source_texte", current_template.get("source_texte", ""))).strip() or current_template.get("source_texte", ""),
+            "niveau_confiance": str(override.get("niveau_confiance", current_template.get("niveau_confiance", "moyen"))),
+            "mode_extraction": str(override.get("mode_extraction", "completion_manuelle")).strip() or "completion_manuelle",
+        }
+    )
+    updated["metadata"] = metadata
+    return updated
 
 
 def first_non_empty_line(text: str) -> str:

@@ -70,8 +70,10 @@ from app.services.persistence import persist_pipeline_outputs
 from app.services.pipeline_runtime import resolve_pipeline_outputs
 from app.services.supabase_bridge import describe_supabase_readiness
 from app.services.wf2 import (
+    apply_dossier_template_override,
     build_bridge_from_wf2,
     extract_wf2a_structured,
+    normalize_dossier_template_metadata,
     extract_wf2b_structured,
     summarize_wf2b_client_profile,
     summarize_wf2b_project_data,
@@ -238,6 +240,69 @@ def render_metadata(metadata: dict[str, str], title: str = "Metadonnees detectee
         cols[index % 2].write(f"**{label}** : {value}")
 
 
+def _format_wf4_part_label(part_key: str) -> str:
+    labels = {
+        "presentation_projet": "Presentation projet",
+        "presentation_sections": "Sections presentation",
+        "budget_projet": "Budget projet",
+        "budget_structure": "Budget structure",
+    }
+    return labels.get(part_key, part_key.replace("_", " ").capitalize())
+
+
+def _format_wf4_part_status(raw_status: object) -> str:
+    status = str(raw_status or "").strip()
+    if not status:
+        return "statut inconnu"
+    if status == "llm":
+        return "LLM OK"
+    if status.startswith("llm_modulaire:"):
+        return f"LLM modulaire par sections ({status.split(':', 1)[1]})"
+    if status.startswith("llm_sections_recovery:"):
+        return f"LLM recupere via sections ({status.split(':', 1)[1]})"
+    if status.startswith("llm_agent:"):
+        return f"LLM agent OK ({status.split(':', 1)[1]})"
+    if status.startswith("llm:"):
+        return f"LLM partiel ({status.split(':', 1)[1]})"
+    if status.startswith("fallback:"):
+        return f"Fallback heuristique ({status.split(':', 1)[1]})"
+    return status
+
+
+def render_wf4_fallback_details(execution_meta: dict[str, object]) -> None:
+    wf4_meta = execution_meta.get("wf4", {})
+    if not isinstance(wf4_meta, dict) or not wf4_meta.get("fallback_used"):
+        return
+
+    parts = wf4_meta.get("parts", {})
+    if not isinstance(parts, dict) or not parts:
+        return
+
+    detail_lines = [
+        f"- **{_format_wf4_part_label(part_key)}** : {_format_wf4_part_status(part_status)}"
+        for part_key, part_status in parts.items()
+    ]
+    if wf4_meta.get("llm_error"):
+        detail_lines.append(f"- **Erreur globale** : `{wf4_meta.get('llm_error')}`")
+
+    st.caption("Detail WF4 sur cette execution")
+    st.markdown("\n".join(detail_lines))
+
+
+def render_wf4_budget_agent_notice(execution: dict[str, object], *, compact: bool = False) -> None:
+    wf4_meta = execution.get("wf4", {}) if isinstance(execution.get("wf4", {}), dict) else {}
+    agent_id = str(wf4_meta.get("budget_project_agent_id", "")).strip()
+    if not agent_id:
+        return
+    if compact:
+        st.caption(f"WF4B budget projet : agent dedie actif (`{agent_id}`)")
+        return
+    st.success(
+        "WF4B budget projet utilise l'agent dedie pour cette execution.\n\n"
+        f"Agent actif : `{agent_id}`"
+    )
+
+
 def render_normalized_text(content: str, filename: str, *, expanded: bool = False, section_title: str = "Source normalisee") -> None:
     with st.expander(section_title, expanded=expanded):
         st.text_area("Contenu normalise", content[:5000], height=260)
@@ -247,6 +312,79 @@ def render_normalized_text(content: str, filename: str, *, expanded: bool = Fals
             file_name=f"{Path(filename).stem}_normalise.md",
             mime="text/markdown",
         )
+
+
+def render_dossier_template_editor(wf2a_structured: dict[str, object]) -> dict[str, object] | None:
+    metadata = wf2a_structured.get("metadata", {}) if isinstance(wf2a_structured.get("metadata", {}), dict) else {}
+    template = normalize_dossier_template_metadata(metadata.get("trame_livrable_attendue", {}))
+
+    st.markdown("### Trame specifique du dossier")
+    detected = bool(template.get("detectee"))
+    if detected:
+        st.info("Une trame potentielle a ete detectee dans les documents dossier. Tu peux la confirmer ou l'ajuster avant WF4A.")
+    else:
+        st.caption("Optionnel : renseigne cette trame seulement si l'appel impose un format ou un ordre de rubriques particulier.")
+
+    use_template = st.checkbox(
+        "Utiliser une trame specifique pour WF4A",
+        value=bool(template.get("requise") or template.get("detectee") or template.get("confirmee")),
+        key="dossier_template_use",
+        help="Si active, WF4A essaiera de suivre cette trame avant la trame standard.",
+    )
+    if not use_template:
+        return None
+
+    col1, col2 = st.columns(2)
+    confirmed = col1.checkbox(
+        "Trame confirmee manuellement",
+        value=bool(template.get("confirmee")),
+        key="dossier_template_confirmed",
+        help="Coche si tu veux forcer l'utilisation de cette trame dans WF4A.",
+    )
+    order_required = col2.checkbox(
+        "Ordre des rubriques impose",
+        value=bool(template.get("ordre_impose")),
+        key="dossier_template_order",
+    )
+    title = st.text_input(
+        "Titre ou nom de la trame",
+        value=str(template.get("titre_trame", "")),
+        key="dossier_template_title",
+        placeholder="Ex. Trame de candidature du cadre d'intervention",
+    ).strip()
+    rubriques_text = st.text_area(
+        "Rubriques attendues, une par ligne",
+        value="\n".join(template.get("rubriques", [])),
+        key="dossier_template_rubriques",
+        height=180,
+        placeholder="Resume du projet\nContexte\nObjectifs\n...",
+    )
+    contraintes_text = st.text_area(
+        "Contraintes ou notes de forme, une par ligne",
+        value="\n".join(template.get("contraintes", [])),
+        key="dossier_template_constraints",
+        height=120,
+        placeholder="Respecter l'ordre des rubriques\nJoindre les annexes demandees",
+    )
+
+    rubriques = [line.strip() for line in rubriques_text.splitlines() if line.strip()]
+    contraintes = [line.strip() for line in contraintes_text.splitlines() if line.strip()]
+    if not rubriques and not confirmed and not detected:
+        return None
+
+    return {
+        "requise": bool(rubriques or confirmed or detected),
+        "detectee": detected or bool(rubriques),
+        "confirmee": confirmed,
+        "titre_trame": title,
+        "rubriques": rubriques,
+        "ordre_impose": order_required,
+        "contraintes": contraintes,
+        "source_document": str(template.get("source_document", "")),
+        "source_texte": str(template.get("source_texte", "")),
+        "niveau_confiance": "haut" if confirmed else str(template.get("niveau_confiance", "moyen")),
+        "mode_extraction": "completion_manuelle" if confirmed or rubriques else str(template.get("mode_extraction", "heuristique_preparee_pour_llm")),
+    }
 
 
 # ── Static pages ──────────────────────────────────────────────────────────────
@@ -540,6 +678,7 @@ def render_llm_page() -> None:
 def render_wf2a_dossier_section(
     dossier_files,
     wf2a_structured: dict[str, object] | None = None,
+    dossier_template_override: dict[str, object] | None = None,
     execution_meta: dict[str, object] | None = None,
 ) -> None:
     st.subheader("WF2a local - Extraction criteres dossier")
@@ -549,6 +688,7 @@ def render_wf2a_dossier_section(
         return
 
     wf2a = wf2a_structured or extract_wf2a_structured(dossier_files)
+    wf2a = apply_dossier_template_override(wf2a, dossier_template_override)
     criteria = wf2a.get("criteres", [])
     metadata = wf2a.get("metadata", {})
 
@@ -571,6 +711,25 @@ def render_wf2a_dossier_section(
         "Nombre de criteres": str(metadata.get("nb_criteres_extraits", 0)),
         "Mode extraction": metadata.get("mode_extraction", "inconnu"),
     })
+
+    template = normalize_dossier_template_metadata(metadata.get("trame_livrable_attendue", {}))
+    if template.get("requise") or template.get("detectee") or template.get("confirmee"):
+        st.markdown("### Trame livrable attendue")
+        render_metadata({
+            "Titre trame": template.get("titre_trame", "Non renseignee"),
+            "Detectee": "oui" if template.get("detectee") else "non",
+            "Confirmee": "oui" if template.get("confirmee") else "non",
+            "Ordre impose": "oui" if template.get("ordre_impose") else "non",
+            "Source": template.get("source_document", "") or "non renseignee",
+        })
+        if template.get("rubriques"):
+            st.write("**Rubriques attendues**")
+            for item in template.get("rubriques", []):
+                st.write(f"- {item}")
+        if template.get("contraintes"):
+            st.write("**Contraintes**")
+            for item in template.get("contraintes", []):
+                st.write(f"- {item}")
 
     st.write(f"{len(criteria)} critere(s) detecte(s)")
     for index, criterion in enumerate(criteria, start=1):
@@ -743,6 +902,7 @@ def render_wf3_section(
     client_files,
     project_files,
     bridge: dict[str, str] | None = None,
+    dossier_template_override: dict[str, object] | None = None,
     global_bridge: dict[str, str] | None = None,
     pipeline_outputs: dict[str, object] | None = None,
 ) -> None:
@@ -753,6 +913,7 @@ def render_wf3_section(
         return
 
     wf2a_structured = pipeline_outputs.get("wf2a") if pipeline_outputs else extract_wf2a_structured(dossier_files)
+    wf2a_structured = apply_dossier_template_override(wf2a_structured, dossier_template_override)
     wf2b_structured = pipeline_outputs.get("wf2b") if pipeline_outputs else extract_wf2b_structured(client_files, project_files)
 
     if bridge is None:
@@ -879,6 +1040,7 @@ def render_wf4_section(
     client_files,
     project_files,
     bridge: dict[str, str] | None = None,
+    dossier_template_override: dict[str, object] | None = None,
     global_bridge: dict[str, str] | None = None,
     pipeline_outputs: dict[str, object] | None = None,
 ) -> None:
@@ -892,6 +1054,7 @@ def render_wf4_section(
         wf4_outputs = pipeline_outputs.get("wf4", {})
     else:
         wf2a_structured = extract_wf2a_structured(dossier_files)
+        wf2a_structured = apply_dossier_template_override(wf2a_structured, dossier_template_override)
         wf2b_structured = extract_wf2b_structured(client_files, project_files)
         if bridge is None:
             bridge = build_bridge_from_wf2(wf2a_structured, wf2b_structured)
@@ -913,6 +1076,7 @@ def render_wf4_section(
             wf2b_structured,
             bridge,
         )
+        completed_wf2a = apply_dossier_template_override(completed_wf2a, dossier_template_override)
         wf3_analysis = build_wf3_analysis(
             completed_wf2a,
             completed_wf2b,
@@ -929,6 +1093,7 @@ def render_wf4_section(
             f"WF3={execution_meta.get('wf3', {}).get('engine', 'heuristique_locale')}, "
             f"WF4={execution_meta.get('wf4', {}).get('engine', 'heuristique_locale')}"
         )
+        render_wf4_budget_agent_notice(execution_meta, compact=True)
 
     rapport = wf4_outputs.get("rapport_structured", {})
     preremplissage = list(wf4_outputs.get("champs_preremplissage", []))
@@ -963,6 +1128,8 @@ def render_wf4_section(
     st.markdown("### 2. Budget previsionnel du projet")
     project_budget_structured = budget_projet.get("structured", {})
     if project_budget_structured:
+        if execution_meta:
+            render_wf4_budget_agent_notice(execution_meta)
         budget_rows = []
         charges = list(project_budget_structured.get("charges", []))
         produits = list(project_budget_structured.get("produits", []))
@@ -1073,6 +1240,7 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
         )
     else:
         st.caption(f"WF4 : `{wf4_engine}`")
+    render_wf4_budget_agent_notice(execution, compact=True)
 
     reset_col, info_col = st.columns([1, 3])
     with reset_col:
@@ -1188,6 +1356,7 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
         charges = list(budget_projet_structured.get("charges", []))
         produits = list(budget_projet_structured.get("produits", []))
         if budget_projet_structured:
+            render_wf4_budget_agent_notice(execution)
             budget_meta = budget_projet_structured.get("metadata", {}) if isinstance(budget_projet_structured.get("metadata", {}), dict) else {}
             financeur = budget_meta.get("financeur_principal", {}) if isinstance(budget_meta.get("financeur_principal", {}), dict) else {}
             periode = budget_meta.get("periode", {}) if isinstance(budget_meta.get("periode", {}), dict) else {}
@@ -1737,6 +1906,11 @@ def render_upload() -> None:
     )
 
     with bridge_tab:
+        dossier_template_override = render_dossier_template_editor(
+            active_pipeline_outputs.get("wf2a") if active_pipeline_outputs else extract_wf2a_structured(block_files_map["Documents dossier"])
+        ) if block_files_map["Documents dossier"] else None
+        if dossier_template_override:
+            st.divider()
         with st.expander("Pont metier WF2a / WF2b", expanded=True):
             completed_bridge = render_bridge_section(
                 bridge,
@@ -1780,7 +1954,8 @@ def render_upload() -> None:
         if configured_providers:
             st.markdown("#### Choix du moteur LLM")
             col_model_1, col_model_2 = st.columns(2)
-            provider_index = configured_providers.index(llm_settings.provider) if llm_settings.provider in configured_providers else 0
+            default_provider = "google" if "google" in configured_providers else llm_settings.provider
+            provider_index = configured_providers.index(default_provider) if default_provider in configured_providers else 0
             selected_provider = col_model_1.selectbox(
                 "Provider LLM",
                 options=configured_providers,
@@ -1808,6 +1983,8 @@ def render_upload() -> None:
             else:
                 selected_model = selected_model_option
             st.caption(f"Execution LLM ciblee : `{selected_provider}` / `{selected_model or default_model}`")
+            if "google" in configured_providers and selected_provider == "google":
+                st.caption("Defaut recommande actif : `google` pour fiabiliser `WF4A`.")
         else:
             st.info("Aucun provider LLM configure. Le pipeline restera en heuristique locale.")
 
@@ -1877,6 +2054,7 @@ def render_upload() -> None:
                     block_files_map["Documents client"],
                     block_files_map["Documents projet"],
                     completed_bridge=completed_bridge,
+                    dossier_template_override=dossier_template_override,
                     global_context_bridge=global_context_bridge,
                     prefer_llm=prefer_llm,
                     llm_provider=selected_provider,
@@ -1928,6 +2106,7 @@ def render_upload() -> None:
                 "WF4 est repasse en fallback heuristique sur cette execution. "
                 "Le livrable affiche peut donc etre plus pauvre que prevu."
             )
+            render_wf4_fallback_details(execution_meta)
         persistence_result = st.session_state.get("pipeline_persistence", {})
         if persistence_result:
             if persistence_result.get("ok"):
@@ -1952,6 +2131,7 @@ def render_upload() -> None:
             block_files_map["Documents client"],
             block_files_map["Documents projet"],
             bridge=completed_bridge,
+            dossier_template_override=dossier_template_override,
             global_bridge=global_context_bridge,
             pipeline_outputs=active_pipeline_outputs,
         )
@@ -1961,6 +2141,7 @@ def render_upload() -> None:
             render_wf2a_dossier_section(
                 block_files_map["Documents dossier"],
                 wf2a_structured=active_pipeline_outputs.get("wf2a") if active_pipeline_outputs else None,
+                dossier_template_override=dossier_template_override,
                 execution_meta=active_pipeline_outputs.get("execution", {}).get("wf2a") if active_pipeline_outputs else None,
             )
         with st.expander("WF2b local - Profil client et donnees projet", expanded=True):
@@ -1977,6 +2158,7 @@ def render_upload() -> None:
             block_files_map["Documents client"],
             block_files_map["Documents projet"],
             bridge=completed_bridge,
+            dossier_template_override=dossier_template_override,
             global_bridge=global_context_bridge,
             pipeline_outputs=active_pipeline_outputs,
         )

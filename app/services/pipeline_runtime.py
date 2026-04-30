@@ -5,11 +5,13 @@ import re
 
 from app.services.wf2 import (
     VALID_CONFIDENCE,
+    apply_dossier_template_override,
     build_bridge_from_wf2,
     build_field_value,
     build_structured_criterion,
     extract_wf2a_structured,
     extract_wf2b_structured,
+    normalize_dossier_template_metadata,
     normalize_category,
     normalize_confidence,
     normalize_domain,
@@ -103,6 +105,9 @@ def normalize_wf2a_llm_payload(payload: dict[str, object], fallback: dict[str, o
             "pieces_attendues": list(metadata.get("pieces_attendues", fallback_metadata.get("pieces_attendues", []))),
             "contraintes_budgetaires": list(metadata.get("contraintes_budgetaires", fallback_metadata.get("contraintes_budgetaires", []))),
             "attentes_redactionnelles": list(metadata.get("attentes_redactionnelles", fallback_metadata.get("attentes_redactionnelles", []))),
+            "trame_livrable_attendue": normalize_dossier_template_metadata(
+                metadata.get("trame_livrable_attendue", fallback_metadata.get("trame_livrable_attendue", {}))
+            ),
             "mode_extraction": "llm_direct_python",
             "documents_sources": list(fallback_metadata.get("documents_sources", [])),
         },
@@ -386,8 +391,6 @@ def _normalize_single_presentation_section(payload: dict[str, object], fallback_
 
 
 def _should_enrich_presentation_section(section: dict[str, object], enriched_count: int) -> bool:
-    if enriched_count >= 5:
-        return False
     title = str(section.get("section", "")).strip().lower()
     content = str(section.get("contenu", "")).strip()
     status = str(section.get("statut", "")).strip().lower()
@@ -402,10 +405,33 @@ def _should_enrich_presentation_section(section: dict[str, object], enriched_cou
         "partenariat",
         "budget",
         "plan de financement",
+        "piece",
+        "annexe",
     )
-    if not any(keyword in title for keyword in strategic_keywords):
-        return False
-    return len(content) < 1200 or status in {"partiel", "a_completer", "a_confirmer"}
+    is_strategic = any(keyword in title for keyword in strategic_keywords)
+    if is_strategic:
+        return len(content) < 1800 or status in {"partiel", "a_completer", "a_confirmer"}
+    return len(content) < 900 or status in {"partiel", "a_completer", "a_confirmer"}
+
+
+def _build_presentation_from_section_results(
+    base_sections: list[dict[str, object]],
+    section_results: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], int]:
+    enriched_sections: list[dict[str, object]] = []
+    llm_section_count = 0
+    result_iter = iter(section_results)
+    for section in base_sections:
+        if not isinstance(section, dict):
+            enriched_sections.append(section)
+            continue
+        result = next(result_iter, None)
+        if result and result.get("ok") and isinstance(result.get("payload"), dict):
+            enriched_sections.append(_normalize_single_presentation_section(result["payload"], section))
+            llm_section_count += 1
+        else:
+            enriched_sections.append(section)
+    return enriched_sections, llm_section_count
 
 
 def _normalize_budget_rows(items: object) -> list[dict[str, object]]:
@@ -832,7 +858,13 @@ def _prefer_richer_budget_rows(
         other = fallback if chosen is primary else primary
         row = dict(other)
         row.update(chosen)
-        if not str(row.get("montant_previsionnel", "")).strip():
+        chosen_amount = str(chosen.get("montant_previsionnel", "")).strip()
+        other_amount = str(other.get("montant_previsionnel", "")).strip()
+        if not _has_meaningful_budget_amount(row) and other_amount and _has_meaningful_budget_amount(other):
+            row["montant_previsionnel"] = other_amount
+        elif not chosen_amount and other_amount:
+            row["montant_previsionnel"] = other_amount
+        elif not str(row.get("montant_previsionnel", "")).strip():
             row["montant_previsionnel"] = "A_COMPLETER"
         merged.append(row)
     return merged
@@ -1012,6 +1044,7 @@ def resolve_wf4_outputs(
     active_provider = ""
     active_model = ""
 
+    modular_base_sections = list(fallback_outputs["livrables"]["presentation_projet"].get("sections", []))
     wf4a_result = request_wf4a_llm_payload(
         wf2a_structured,
         wf2b_structured,
@@ -1028,6 +1061,8 @@ def resolve_wf4_outputs(
             fallback_outputs,
         )
         wf4_outputs["livrables"]["presentation_projet"] = presentation
+        if isinstance(presentation, dict) and isinstance(presentation.get("sections", []), list) and presentation.get("sections"):
+            modular_base_sections = list(presentation.get("sections", []))
         if presentation.get("resume_executif"):
             wf4_outputs["rapport_structured"]["resume_executif"] = presentation["resume_executif"]
         llm_parts_ok += 1
@@ -1037,20 +1072,17 @@ def resolve_wf4_outputs(
 
     presentation_payload = wf4_outputs["livrables"].get("presentation_projet", {})
     section_results = []
-    if isinstance(presentation_payload, dict):
-        current_sections = list(presentation_payload.get("sections", []))
-        enriched_sections = []
+    llm_section_count = 0
+    if modular_base_sections:
         llm_section_attempts = 0
-        for index, section in enumerate(current_sections):
+        attempted_sections = []
+        for index, section in enumerate(modular_base_sections):
             if not isinstance(section, dict):
-                enriched_sections.append(section)
                 continue
             if index >= 10:
-                enriched_sections.append(section)
                 continue
             section_body = str(section.get("contenu", "")).strip()
             if not _should_enrich_presentation_section(section, llm_section_attempts):
-                enriched_sections.append(section)
                 continue
 
             section_request = {
@@ -1064,6 +1096,7 @@ def resolve_wf4_outputs(
                 ),
             }
             llm_section_attempts += 1
+            attempted_sections.append(section)
             section_result = request_wf4a_section_payload(
                 wf2a_structured,
                 wf2b_structured,
@@ -1073,17 +1106,34 @@ def resolve_wf4_outputs(
                 model_override=llm_model,
             )
             section_results.append(section_result)
-            if section_result.get("ok") and isinstance(section_result.get("payload"), dict):
-                enriched_sections.append(_normalize_single_presentation_section(section_result["payload"], section))
-            else:
-                enriched_sections.append(section)
-
-        if enriched_sections:
-            presentation_payload["sections"] = enriched_sections
-            presentation_payload["markdown"] = build_project_presentation_markdown(enriched_sections)
+        if attempted_sections:
+            attempted_map = {id(section): section for section in attempted_sections}
+            attempted_iter = iter(section_results)
+            rebuilt_sections = []
+            for section in modular_base_sections:
+                if not isinstance(section, dict):
+                    rebuilt_sections.append(section)
+                    continue
+                if id(section) in attempted_map:
+                    result = next(attempted_iter, None)
+                    if result and result.get("ok") and isinstance(result.get("payload"), dict):
+                        rebuilt_sections.append(_normalize_single_presentation_section(result["payload"], section))
+                    else:
+                        rebuilt_sections.append(section)
+                else:
+                    rebuilt_sections.append(section)
             llm_section_count = sum(
                 1 for result in section_results if result.get("ok") and isinstance(result.get("payload"), dict)
             )
+            if not isinstance(presentation_payload, dict):
+                presentation_payload = {}
+                wf4_outputs["livrables"]["presentation_projet"] = presentation_payload
+            presentation_payload["sections"] = rebuilt_sections
+            presentation_payload["markdown"] = build_project_presentation_markdown(rebuilt_sections)
+            if not str(presentation_payload.get("resume_executif", "")).strip() and rebuilt_sections:
+                first_section_content = str(rebuilt_sections[0].get("contenu", "")).strip()
+                if first_section_content:
+                    presentation_payload["resume_executif"] = first_section_content[:1400]
             if llm_section_count:
                 meta["parts"]["presentation_sections"] = f"llm:{llm_section_count}/{len(section_results)}"
             elif section_results:
@@ -1092,6 +1142,15 @@ def resolve_wf4_outputs(
                     "llm_error",
                 )
                 meta["parts"]["presentation_sections"] = f"fallback:{first_error}"
+
+    # En mode modulaire, la presentation peut etre consideree comme LLM si un noyau
+    # suffisant de sections a ete effectivement compose, meme si le payload global rate.
+    if llm_section_count >= 3 and isinstance(presentation_payload, dict) and presentation_payload.get("sections"):
+        if not wf4a_result.get("ok"):
+            llm_parts_ok += 1
+            meta["parts"]["presentation_projet"] = f"llm_sections_recovery:{llm_section_count}"
+        elif meta["parts"].get("presentation_projet") == "llm":
+            meta["parts"]["presentation_projet"] = f"llm_modulaire:{llm_section_count}"
 
     wf4b_result = request_wf4b_llm_payload(
         wf2a_structured,
@@ -1224,6 +1283,7 @@ def resolve_pipeline_outputs(
     client_files,
     project_files,
     completed_bridge: dict[str, str],
+    dossier_template_override: dict[str, object] | None = None,
     global_context_bridge: dict[str, str] | None = None,
     prefer_llm: bool = True,
     llm_provider: str | None = None,
@@ -1248,6 +1308,7 @@ def resolve_pipeline_outputs(
         wf2b_structured,
         completed_bridge,
     )
+    completed_wf2a = apply_dossier_template_override(completed_wf2a, dossier_template_override)
     wf3_analysis, wf3_meta = resolve_wf3_analysis(
         completed_wf2a,
         completed_wf2b,

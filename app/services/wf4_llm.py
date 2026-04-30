@@ -43,7 +43,13 @@ def _collect_field_sources(block: dict[str, object]) -> list[dict[str, str]]:
                     )
     return collected
 
-from app.services.llm_client import call_llm_message, call_mistral_agent_message, load_llm_settings, parse_json_response
+from app.services.llm_client import (
+    call_llm_message,
+    call_mistral_agent_message,
+    load_llm_settings,
+    parse_json_response,
+    repair_json_response_with_llm,
+)
 
 
 WF4A_SYSTEM_PROMPT = """
@@ -75,6 +81,7 @@ Tu dois t’appuyer en priorité sur les données internes suivantes :
 - `matiere_source.structure_porteuse`
 - `matiere_source.projet`
 - `matiere_source.actions_critiques`
+- `matiere_source.trame_livrable_attendue`
 
 Tu dois distinguer clairement :
 - les informations confirmées
@@ -89,6 +96,7 @@ Processus de travail
 2. Lire les données disponibles côté structure et projet dans `wf2b`.
 3. Lire les écarts et validations de `wf3` pour éviter de présenter comme acquises des informations non confirmées.
 4. Construire un plan de document adapté aux attendus du financeur.
+   Si `matiere_source.trame_livrable_attendue` indique une trame specifique detectee ou confirmee, tu dois l'utiliser en priorite comme squelette du document.
    Le plan doit viser en priorité les rubriques suivantes, sauf contradiction explicite de l'appel :
    - Resume du projet
    - Presentation de la structure porteuse
@@ -137,6 +145,7 @@ Contraintes / garde-fous
 - Adopte un style professionnel, fluide, clair, crédible et exploitable.
 - Raisonne en interne mais n’expose pas ton raisonnement détaillé.
 - Respecte strictement les attendus identifiés dans `wf2a`.
+- Si une trame specifique dossier est fournie et exploitable, respecte d'abord ses rubriques et leur ordre avant d'utiliser la trame standard.
 - Ne te contente jamais de reformuler `wf3.resume_executif`.
 - Quand la matière source est suffisante, chaque grande section doit contenir un vrai brouillon rédigé, pas une simple note.
 - Vise en priorité 6 à 10 sections utiles et substantielles.
@@ -396,6 +405,26 @@ def _build_wf4_payload_dict(
     source_documents = _dedup_strings(
         [entry["source_document"] for entry in criteres + structure_sources + projet_sources if entry.get("source_document")]
     )
+    dossier_template = {}
+    metadata = wf2a_structured.get("metadata", {})
+    if isinstance(metadata, dict) and isinstance(metadata.get("trame_livrable_attendue", {}), dict):
+        raw_template = metadata.get("trame_livrable_attendue", {})
+        requise = bool(raw_template.get("requise", False))
+        detectee = bool(raw_template.get("detectee", False))
+        confirmee = bool(raw_template.get("confirmee", False))
+        if requise or detectee or confirmee:
+            dossier_template = {
+                "requise": requise,
+                "detectee": detectee,
+                "confirmee": confirmee,
+                "titre_trame": str(raw_template.get("titre_trame", "")).strip(),
+                "rubriques": [str(item).strip() for item in raw_template.get("rubriques", []) if str(item).strip()],
+                "ordre_impose": bool(raw_template.get("ordre_impose", False)),
+                "contraintes": [str(item).strip() for item in raw_template.get("contraintes", []) if str(item).strip()],
+                "source_document": str(raw_template.get("source_document", "")).strip(),
+                "source_texte": str(raw_template.get("source_texte", "")).strip(),
+                "niveau_confiance": str(raw_template.get("niveau_confiance", "")).strip(),
+            }
 
     return {
         "wf2a": wf2a_structured,
@@ -407,6 +436,7 @@ def _build_wf4_payload_dict(
             "structure_porteuse": structure_sources,
             "projet": projet_sources,
             "actions_critiques": critical_actions,
+            "trame_livrable_attendue": dossier_template,
         },
     }
 
@@ -593,6 +623,15 @@ def get_section_guidance(section_type: str) -> list[str]:
     return list(config.get("guidance", []))
 
 
+def _resolve_wf4a_provider_override(provider_override: str | None) -> str | None:
+    if provider_override:
+        return provider_override
+    google_settings = load_llm_settings(provider_override="google")
+    if google_settings.is_configured:
+        return "google"
+    return None
+
+
 def request_wf4a_llm_payload(
     wf2a_structured: dict[str, object],
     wf2b_structured: dict[str, object],
@@ -600,11 +639,12 @@ def request_wf4a_llm_payload(
     provider_override: str | None = None,
     model_override: str | None = None,
 ) -> dict[str, object]:
+    wf4a_provider_override = _resolve_wf4a_provider_override(provider_override)
     llm_result = call_llm_message(
         WF4A_SYSTEM_PROMPT,
         _build_wf4_payload(wf2a_structured, wf2b_structured, wf3_analysis),
         max_tokens=6000,
-        provider_override=provider_override,
+        provider_override=wf4a_provider_override,
         model_override=model_override,
     )
     if not llm_result.get("ok"):
@@ -618,13 +658,30 @@ def request_wf4a_llm_payload(
         }
 
     parsed_payload, parse_error = parse_json_response(str(llm_result.get("text", "")))
+    repair_usage: dict[str, object] = {}
+    repair_model = ""
+    if parse_error is not None:
+        repair_result = repair_json_response_with_llm(
+            str(llm_result.get("text", "")),
+            provider_override=wf4a_provider_override,
+            model_override=model_override,
+        )
+        if repair_result.get("ok") and isinstance(repair_result.get("payload"), dict):
+            parsed_payload = repair_result["payload"]
+            parse_error = None
+        repair_usage = repair_result.get("usage", {}) if isinstance(repair_result.get("usage", {}), dict) else {}
+        repair_model = str(repair_result.get("model", "")).strip()
     if parse_error is None and isinstance(parsed_payload, dict) and _looks_like_json_schema_payload(parsed_payload):
         parse_error = "schema_reproduit_au_lieu_des_donnees"
     return {
         "ok": parse_error is None and parsed_payload is not None,
         "error": parse_error,
         "payload": parsed_payload,
-        "usage": llm_result.get("usage", {}),
+        "usage": {
+            **(llm_result.get("usage", {}) if isinstance(llm_result.get("usage", {}), dict) else {}),
+            **({"json_repair_model": repair_model} if repair_model else {}),
+            **({"json_repair_used": True} if repair_usage or repair_model else {}),
+        },
         "provider": llm_result.get("provider", ""),
         "model": llm_result.get("model", ""),
         "raw_text": llm_result.get("text", ""),
@@ -674,6 +731,15 @@ def request_wf4b_llm_payload(
         }
 
     parsed_payload, parse_error = parse_json_response(str(llm_result.get("text", "")))
+    if parse_error is not None:
+        repair_result = repair_json_response_with_llm(
+            str(llm_result.get("text", "")),
+            provider_override=provider_override,
+            model_override=model_override,
+        )
+        if repair_result.get("ok") and isinstance(repair_result.get("payload"), dict):
+            parsed_payload = repair_result["payload"]
+            parse_error = None
     return {
         "ok": parse_error is None and parsed_payload is not None,
         "error": parse_error,
@@ -711,6 +777,15 @@ def request_wf4c_llm_payload(
         }
 
     parsed_payload, parse_error = parse_json_response(str(llm_result.get("text", "")))
+    if parse_error is not None:
+        repair_result = repair_json_response_with_llm(
+            str(llm_result.get("text", "")),
+            provider_override=provider_override,
+            model_override=model_override,
+        )
+        if repair_result.get("ok") and isinstance(repair_result.get("payload"), dict):
+            parsed_payload = repair_result["payload"]
+            parse_error = None
     return {
         "ok": parse_error is None and parsed_payload is not None,
         "error": parse_error,
@@ -730,6 +805,7 @@ def request_wf4a_section_payload(
     provider_override: str | None = None,
     model_override: str | None = None,
 ) -> dict[str, object]:
+    wf4a_provider_override = _resolve_wf4a_provider_override(provider_override)
     payload = _build_wf4_payload_dict(wf2a_structured, wf2b_structured, wf3_analysis)
     payload["section_cible"] = section_payload
 
@@ -737,7 +813,7 @@ def request_wf4a_section_payload(
         WF4A_SECTION_SYSTEM_PROMPT,
         json.dumps(payload, ensure_ascii=False, indent=2),
         max_tokens=2200,
-        provider_override=provider_override,
+        provider_override=wf4a_provider_override,
         model_override=model_override,
     )
     if not llm_result.get("ok"):
@@ -751,6 +827,15 @@ def request_wf4a_section_payload(
         }
 
     parsed_payload, parse_error = parse_json_response(str(llm_result.get("text", "")))
+    if parse_error is not None:
+        repair_result = repair_json_response_with_llm(
+            str(llm_result.get("text", "")),
+            provider_override=wf4a_provider_override,
+            model_override=model_override,
+        )
+        if repair_result.get("ok") and isinstance(repair_result.get("payload"), dict):
+            parsed_payload = repair_result["payload"]
+            parse_error = None
     return {
         "ok": parse_error is None and parsed_payload is not None,
         "error": parse_error,

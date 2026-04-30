@@ -1056,3 +1056,51 @@ Un ajustement a aussi ete fait dans la normalisation des budgets :
 
 But :
 - eviter de perdre des montants si le modele ne respecte pas exactement le meme nom de champ
+
+## Piste future : authentification et memoire utilisateur via Supabase
+
+Une evolution a garder en backlog consiste a profiter du branchement Supabase pour ajouter :
+- un **login utilisateur** via `Supabase Auth`
+- un **profil utilisateur** lie a `auth.users`
+- une **memoire utilisateur structuree**
+
+Principe recommande :
+- ne pas viser une "memoire IA floue"
+- privilegier une memoire explicite, reliee a des usages metier concrets
+
+Exemples de memoire utile :
+- preferences utilisateur
+- derniers dossiers ouverts
+- clients favoris
+- brouillons et etats intermediaires `WF4`
+- trames specifiques frequentes
+- historique d'executions et de livrables
+
+Architecture cible prudente :
+- `Supabase Auth` pour l'authentification
+- table `profiles` pour l'identite et le role
+- tables metier reliees a `user_id`
+- `RLS` pour isoler les donnees par utilisateur
+- session Streamlit synchronisee avec l'utilisateur connecte
+
+Deroulé conseille :
+- **V1** : login seul
+- **V2** : profil utilisateur
+- **V3** : memoire legere (preferences, recents, favoris)
+- **V4** : brouillons, trames enregistrees, historique de travail
+
+## Piste future : deploiement local portable
+
+Possibilites a garder en tete pour rendre l'application diffusable plus facilement sur d'autres ordinateurs :
+- version locale packagée de l'app `Streamlit`
+- distribution via un exécutable type `PyInstaller`
+- evolution vers une app desktop avec shell type `Tauri` ou `Electron`
+- separation future entre frontend et backend si une version plus web-native devient necessaire
+
+Point de vigilance :
+- l'application actuelle ne peut pas etre reduite a un simple dossier statique + fichier `html`
+- elle depend d'un runtime Python, des workflows locaux, des appels LLM et du branchement `Supabase`
+
+Conclusion provisoire :
+- **oui**, il existe plusieurs pistes de diffusion locale ou portable
+- **non**, pas sous forme de simple export HTML statique dans l'etat actuel de l'architecture
