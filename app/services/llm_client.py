@@ -537,3 +537,59 @@ def parse_json_response(text: str) -> tuple[dict[str, object] | None, str | None
         return None, "json_non_objet"
     except json.JSONDecodeError as exc:
         return None, f"json_invalide: {exc}"
+
+
+def repair_json_response_with_llm(
+    text: str,
+    *,
+    provider_override: str | None = None,
+    model_override: str | None = None,
+    max_tokens: int = 6500,
+) -> dict[str, object]:
+    repair_prompt = """
+Role
+Tu es un moteur de reparation JSON.
+
+Objectif
+Recevoir une sortie quasi-JSON invalide et retourner uniquement un JSON valide.
+
+Contraintes
+- Ne change pas le sens des donnees.
+- Ne supprime pas une cle ou une valeur sauf si elle est manifestement tronquee ou corrompue.
+- Ne rajoute aucun commentaire, markdown, explication ou balise.
+- Retourne uniquement un objet JSON valide.
+- Ne recopie pas d'introduction.
+""".strip()
+
+    repair_user_prompt = (
+        "Repare cet objet JSON invalide et retourne uniquement le JSON valide.\n\n"
+        f"{text.strip()}"
+    )
+    llm_result = call_llm_message(
+        repair_prompt,
+        repair_user_prompt,
+        max_tokens=max_tokens,
+        provider_override=provider_override,
+        model_override=model_override,
+    )
+    if not llm_result.get("ok"):
+        return {
+            "ok": False,
+            "error": llm_result.get("error", "json_repair_llm_error"),
+            "payload": None,
+            "raw_text": llm_result.get("text", ""),
+            "provider": llm_result.get("provider", ""),
+            "model": llm_result.get("model", ""),
+            "usage": llm_result.get("usage", {}),
+        }
+
+    repaired_payload, repaired_error = parse_json_response(str(llm_result.get("text", "")))
+    return {
+        "ok": repaired_error is None and repaired_payload is not None,
+        "error": repaired_error,
+        "payload": repaired_payload,
+        "raw_text": llm_result.get("text", ""),
+        "provider": llm_result.get("provider", ""),
+        "model": llm_result.get("model", ""),
+        "usage": llm_result.get("usage", {}),
+    }

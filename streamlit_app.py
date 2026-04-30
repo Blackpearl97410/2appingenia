@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import streamlit as st
 
+from app.ui.styles import inject_global_styles, render_theme_toggle
+
 from app.ui.pages import (
     render_demo_data,
     render_document_catalog_page,
@@ -19,6 +21,12 @@ def main() -> None:
         page_icon="📁",
         layout="wide",
     )
+
+    inject_global_styles()
+
+    st.sidebar.markdown("## 📁 AAP Ingenia")
+    render_theme_toggle()
+    st.sidebar.divider()
 
     page = st.sidebar.radio(
         "Navigation",

@@ -24,6 +24,9 @@ supabase/.temp/
 .DS_Store
 **/.DS_Store
 
+# Local editor settings
+.vscode/
+
 # Données locales / documents de test
 base de données appels d'offres et appels à projets vides/
 contexte/

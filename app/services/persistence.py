@@ -283,9 +283,14 @@ def _persist_pipeline_outputs_inner(
             "documents_manquants": [_sanitize_text(item) for item in list(rapport.get("pieces_manquantes", []))],
             "recommandations": [_sanitize_text(item) for item in list(rapport.get("recommandations", []))],
             "statut_traitement": "termine",
-            "modele_ia": "claude-sonnet-4-20250514" if any(
-                step.get("engine") == "llm_direct_python" for step in execution.values() if isinstance(step, dict)
-            ) else None,
+            "modele_ia": next(
+                (
+                    step.get("model")
+                    for step in execution.values()
+                    if isinstance(step, dict) and step.get("engine") == "llm_direct_python" and step.get("model")
+                ),
+                None,
+            ),
             "prompt_version": "wf2-wf3-v1",
         }
     ).execute().data[0]

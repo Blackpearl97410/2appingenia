@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__mcp-registry__search_mcp_registry",
+      "Bash(python3 -m py_compile app/services/block_analysis.py)",
+      "Bash(python3 -m py_compile app/ui/pages.py)",
+      "Bash(python3 -m py_compile streamlit_app.py)",
+      "Bash(grep -E \"\\\\.md$|memoire|contexte\")",
+      "Bash(python3 -m py_compile app/services/llm_client.py)",
+      "Bash(python3 -m py_compile app/services/wf2_llm.py)",
+      "Bash(python3 -m py_compile app/services/wf2b_llm.py)",
+      "Bash(python3 -m py_compile app/services/pipeline_runtime.py)",
+      "Bash(.venv/bin/python3 -c ':*)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -m pip install pandas -q)",
+      "Bash(timeout 120 python3 -c ' *)",
+      "Bash(python3 -m pip install python-docx pypdf python-dotenv anthropic -q)",
+      "Bash(python3 -m pip install openpyxl -q)",
+      "Bash(python3 -c \"from mistralai import Mistral; print\\('mistralai OK'\\)\")",
+      "Bash(python3 -m pip install \"mistralai>=1,<2\" -q)"
+    ]
+  }
+}
