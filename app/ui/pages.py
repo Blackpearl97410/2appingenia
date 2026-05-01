@@ -107,6 +107,9 @@ def store_pipeline_outputs(
     persistence: dict[str, object] | None = None,
 ) -> None:
     st.session_state["pipeline_signature"] = signature
+    st.session_state["pipeline_edit_signature"] = (
+        f"{signature}:{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+    )
     st.session_state["pipeline_schema_version"] = PIPELINE_SCHEMA_VERSION
     st.session_state["pipeline_outputs"] = outputs
     st.session_state["pipeline_persistence"] = persistence or {}
@@ -256,6 +259,8 @@ def _format_wf4_part_status(raw_status: object) -> str:
         return "statut inconnu"
     if status == "llm":
         return "LLM OK"
+    if status.startswith("local:priorite_wf4a_google"):
+        return "Local guide (priorite WF4A avec Google)"
     if status.startswith("llm_modulaire:"):
         return f"LLM modulaire par sections ({status.split(':', 1)[1]})"
     if status.startswith("llm_sections_recovery:"):
@@ -578,15 +583,16 @@ def render_llm_page() -> None:
 
     llm_info = describe_llm_readiness()
     anthropic_configured = llm_info.get("ANTHROPIC_API_KEY") == "configuree"
+    deepseek_configured = llm_info.get("DEEPSEEK_API_KEY") == "configuree"
     google_configured = llm_info.get("GOOGLE_API_KEY") == "configuree"
     mistral_configured = llm_info.get("MISTRAL_API_KEY") == "configuree"
-    is_configured = anthropic_configured or google_configured or mistral_configured
+    is_configured = anthropic_configured or deepseek_configured or google_configured or mistral_configured
 
     if is_configured:
         st.success("Provider LLM configure et operationnel.")
     else:
         st.warning(
-            "Aucune cle LLM configuree. Ajoutez `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` ou `MISTRAL_API_KEY` dans les secrets Streamlit ou dans le fichier `.env`."
+            "Aucune cle LLM configuree. Ajoutez `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `GOOGLE_API_KEY` ou `MISTRAL_API_KEY` dans les secrets Streamlit ou dans le fichier `.env`."
         )
 
     render_metadata(llm_info)
@@ -611,6 +617,7 @@ def render_llm_page() -> None:
         st.write("")
         st.write("**Providers supportes**")
         st.write("- Anthropic / Claude")
+        st.write("- DeepSeek / V4 Pro thinking ou non-thinking")
         st.write("- Google / Gemini")
         st.write("- Google / Gemma si le modele est expose par ton compte")
         st.write("- Mistral / Mistral Small 4")
@@ -638,6 +645,13 @@ def render_llm_page() -> None:
     with st.expander("Configuration recommandee", expanded=False):
         st.write("**Anthropic**")
         st.code('ANTHROPIC_API_KEY=\"...\"', language="toml")
+        st.write("**DeepSeek V4**")
+        st.code(
+            'LLM_PROVIDER=\"deepseek\"\n'
+            'DEEPSEEK_API_KEY=\"...\"\n'
+            'DEEPSEEK_MODEL=\"deepseek-v4-pro-thinking\"',
+            language="toml",
+        )
         st.write("**Google Gemini**")
         st.code('LLM_PROVIDER=\"google\"\nGOOGLE_API_KEY=\"...\"\nGOOGLE_MODEL=\"gemini-2.5-flash\"', language="toml")
         st.write("**Mistral**")
@@ -649,7 +663,7 @@ def render_llm_page() -> None:
             language="toml",
         )
         st.caption(
-            "Pour Gemma, garde la meme integration Google. Si ton compte Google AI Studio ou Vertex expose un modele Gemma compatible API, il suffira de remplacer `GOOGLE_MODEL`. Pour Mistral, `mistral-small-2603` est le choix retenu et recommande ici. Si `MISTRAL_AGENT_BUDGET_PROJET_ID` est defini, la generation du budget projet WF4B passera par cet agent."
+            "DeepSeek V4 est expose ici en deux variantes de choix : `deepseek-v4-pro-thinking` et `deepseek-v4-pro-non-thinking`, avec le thinking comme defaut recommande. Pour Gemma, garde la meme integration Google. Si ton compte Google AI Studio ou Vertex expose un modele Gemma compatible API, il suffira de remplacer `GOOGLE_MODEL`. Pour Mistral, `mistral-small-2603` est le choix retenu et recommande ici. Si `MISTRAL_AGENT_BUDGET_PROJET_ID` est defini, la generation du budget projet WF4B passera par cet agent."
         )
 
     st.markdown("### Test de preparation WF2a")
@@ -1232,7 +1246,12 @@ def render_final_result_summary(pipeline_outputs: dict[str, object]) -> None:
     execution = pipeline_outputs.get("execution", {})
     wf3 = pipeline_outputs.get("wf3", {})
     wf4 = pipeline_outputs.get("wf4", {})
-    pipeline_signature = str(st.session_state.get("pipeline_signature", "default"))
+    pipeline_signature = str(
+        st.session_state.get(
+            "pipeline_edit_signature",
+            st.session_state.get("pipeline_signature", "default"),
+        )
+    )
     editable_wf4 = get_editable_wf4(pipeline_signature, wf4)
     wf4 = editable_wf4
     rapport = wf4.get("rapport_structured", {})
@@ -1967,6 +1986,7 @@ def render_upload() -> None:
     supabase_ready = describe_supabase_readiness()
     use_llm_default = (
         llm_ready.get("ANTHROPIC_API_KEY") == "configuree"
+        or llm_ready.get("DEEPSEEK_API_KEY") == "configuree"
         or llm_ready.get("GOOGLE_API_KEY") == "configuree"
         or llm_ready.get("MISTRAL_API_KEY") == "configuree"
     )
@@ -1994,7 +2014,12 @@ def render_upload() -> None:
         if configured_providers:
             st.markdown("#### Choix du moteur LLM")
             col_model_1, col_model_2 = st.columns(2)
-            default_provider = "google" if "google" in configured_providers else llm_settings.provider
+            if "deepseek" in configured_providers:
+                default_provider = "deepseek"
+            elif "google" in configured_providers:
+                default_provider = "google"
+            else:
+                default_provider = llm_settings.provider
             provider_index = configured_providers.index(default_provider) if default_provider in configured_providers else 0
             selected_provider = col_model_1.selectbox(
                 "Provider LLM",
@@ -2023,6 +2048,8 @@ def render_upload() -> None:
             else:
                 selected_model = selected_model_option
             st.caption(f"Execution LLM ciblee : `{selected_provider}` / `{selected_model or default_model}`")
+            if "deepseek" in configured_providers and selected_provider == "deepseek":
+                st.caption("Defaut recommande actif : `deepseek-v4-pro-thinking` pour les tests de qualite.")
             if "google" in configured_providers and selected_provider == "google":
                 st.caption("Defaut recommande actif : `google` pour fiabiliser `WF4A`.")
         else:

@@ -30,10 +30,12 @@ from app.services.wf4 import (
 from app.services.wf4_llm import (
     get_section_guidance,
     infer_presentation_section_type,
+    is_google_quota_exhausted_error,
     request_wf4a_llm_payload,
     request_wf4a_section_payload,
     request_wf4b_llm_payload,
     request_wf4c_llm_payload,
+    wf4b_has_dedicated_agent,
 )
 
 
@@ -473,6 +475,46 @@ def _should_enrich_presentation_section(section: dict[str, object], enriched_cou
     if is_strategic:
         return len(content) < 2400 or status in {"partiel", "a_completer", "a_confirmer"}
     return len(content) < 1300 or status in {"partiel", "a_completer", "a_confirmer"}
+
+
+def _presentation_section_priority(section: dict[str, object]) -> int:
+    title = str(section.get("section", "")).strip().lower()
+    if "action" in title:
+        return 100
+    if "public" in title or "beneficiaire" in title or "territoire" in title:
+        return 95
+    if "structure" in title:
+        return 92
+    if "methodologie" in title or "mise en oeuvre" in title:
+        return 90
+    if "contexte" in title or "besoin" in title:
+        return 88
+    if "resume" in title:
+        return 85
+    if "moyens" in title or "partenariat" in title:
+        return 82
+    if "budget" in title or "financement" in title:
+        return 80
+    return 60
+
+
+def _presentation_section_attempt_limit(provider: str, model: str) -> int:
+    provider_norm = str(provider or "").strip().lower()
+    model_norm = str(model or "").strip().lower()
+    if provider_norm == "google":
+        if "flash-lite" in model_norm:
+            return 2
+        if "flash" in model_norm:
+            return 3
+    return 6
+
+
+def _should_prioritize_wf4a_over_budget_llm(provider: str, model: str) -> bool:
+    provider_norm = str(provider or "").strip().lower()
+    model_norm = str(model or "").strip().lower()
+    if provider_norm != "google":
+        return False
+    return "flash" in model_norm
 
 
 def _build_presentation_from_section_results(
@@ -1104,6 +1146,8 @@ def resolve_wf4_outputs(
     llm_parts_ok = 0
     active_provider = ""
     active_model = ""
+    wf4b_result: dict[str, object] = {"usage": {}, "agent_id": ""}
+    wf4c_result: dict[str, object] = {"usage": {}}
 
     modular_base_sections = list(fallback_outputs["livrables"]["presentation_projet"].get("sections", []))
     wf4a_result = request_wf4a_llm_payload(
@@ -1134,30 +1178,38 @@ def resolve_wf4_outputs(
     presentation_payload = wf4_outputs["livrables"].get("presentation_projet", {})
     section_results = []
     llm_section_count = 0
-    if modular_base_sections:
-        llm_section_attempts = 0
-        attempted_sections = []
+    global_wf4a_quota_exhausted = bool(wf4a_result.get("quota_exhausted")) or is_google_quota_exhausted_error(
+        wf4a_result.get("error", "")
+    )
+    if modular_base_sections and not global_wf4a_quota_exhausted:
+        effective_provider = str(llm_provider or active_provider or "").strip().lower()
+        effective_model = str(llm_model or active_model or "").strip().lower()
+        section_attempt_limit = _presentation_section_attempt_limit(effective_provider, effective_model)
+        candidate_sections = []
         for index, section in enumerate(modular_base_sections):
             if not isinstance(section, dict):
                 continue
-            if index >= 10:
+            if index >= 12:
                 continue
-            section_body = str(section.get("contenu", "")).strip()
-            if not _should_enrich_presentation_section(section, llm_section_attempts):
+            if not _should_enrich_presentation_section(section, len(candidate_sections)):
                 continue
+            candidate_sections.append((index, section))
+        candidate_sections.sort(key=lambda item: _presentation_section_priority(item[1]), reverse=True)
+        candidate_sections = candidate_sections[:section_attempt_limit]
 
+        result_by_index = {}
+        for index, section in candidate_sections:
+            section_body = str(section.get("contenu", "")).strip()
+            section_title = str(section.get("section", "")).strip()
+            section_type = infer_presentation_section_type(section_title)
             section_request = {
-                "titre": str(section.get("section", "")).strip(),
-                "objectif_section": str(section.get("section", "")).strip(),
+                "titre": section_title,
+                "objectif_section": section_title,
                 "contenu_initial": section_body,
                 "statut_initial": str(section.get("statut", "")).strip().lower(),
-                "section_type": infer_presentation_section_type(str(section.get("section", "")).strip()),
-                "consignes_section": get_section_guidance(
-                    infer_presentation_section_type(str(section.get("section", "")).strip())
-                ),
+                "section_type": section_type,
+                "consignes_section": get_section_guidance(section_type),
             }
-            llm_section_attempts += 1
-            attempted_sections.append(section)
             section_result = request_wf4a_section_payload(
                 wf2a_structured,
                 wf2b_structured,
@@ -1167,16 +1219,15 @@ def resolve_wf4_outputs(
                 model_override=llm_model,
             )
             section_results.append(section_result)
-        if attempted_sections:
-            attempted_map = {id(section): section for section in attempted_sections}
-            attempted_iter = iter(section_results)
+            result_by_index[index] = section_result
+        if result_by_index:
             rebuilt_sections = []
-            for section in modular_base_sections:
+            for index, section in enumerate(modular_base_sections):
                 if not isinstance(section, dict):
                     rebuilt_sections.append(section)
                     continue
-                if id(section) in attempted_map:
-                    result = next(attempted_iter, None)
+                if index in result_by_index:
+                    result = result_by_index.get(index)
                     if result and result.get("ok") and isinstance(result.get("payload"), dict):
                         rebuilt_sections.append(_normalize_single_presentation_section(result["payload"], section))
                     else:
@@ -1203,6 +1254,8 @@ def resolve_wf4_outputs(
                     "llm_error",
                 )
                 meta["parts"]["presentation_sections"] = f"fallback:{first_error}"
+    elif global_wf4a_quota_exhausted:
+        meta["parts"]["presentation_sections"] = "fallback:quota_google_epuise"
 
     # En mode modulaire, la presentation peut etre consideree comme LLM si un noyau
     # suffisant de sections a ete effectivement compose, meme si le payload global rate.
@@ -1213,70 +1266,81 @@ def resolve_wf4_outputs(
         elif meta["parts"].get("presentation_projet") == "llm":
             meta["parts"]["presentation_projet"] = f"llm_modulaire:{llm_section_count}"
 
-    wf4b_result = request_wf4b_llm_payload(
-        wf2a_structured,
-        wf2b_structured,
-        wf3_analysis,
-        provider_override=llm_provider,
-        model_override=llm_model,
-    )
-    if not active_provider and wf4b_result.get("provider"):
-        active_provider = str(wf4b_result.get("provider", ""))
-        active_model = str(wf4b_result.get("model", ""))
-    if wf4b_result.get("ok") and isinstance(wf4b_result.get("payload"), dict):
-        budget_structured = _normalize_budget_payload(
-            wf4b_result["payload"],
-            fallback_outputs["livrables"]["budget_projet"]["structured"],
-        )
-        wf4_outputs["livrables"]["budget_projet"] = {
-            "structured": budget_structured,
-            "markdown": build_project_budget_markdown(budget_structured),
-        }
-        llm_parts_ok += 1
-        if wf4b_result.get("agent_id"):
-            meta["parts"]["budget_projet"] = f"llm_agent:{wf4b_result.get('agent_id')}"
-        else:
-            meta["parts"]["budget_projet"] = "llm"
-    else:
-        meta["parts"]["budget_projet"] = f"fallback:{wf4b_result.get('error', 'llm_error')}"
+    effective_provider = str(llm_provider or active_provider or "").strip().lower()
+    effective_model = str(llm_model or active_model or "").strip().lower()
+    prioritize_wf4a = _should_prioritize_wf4a_over_budget_llm(effective_provider, effective_model)
 
-    wf4c_result = request_wf4c_llm_payload(
-        wf2a_structured,
-        wf2b_structured,
-        wf3_analysis,
-        provider_override=llm_provider,
-        model_override=llm_model,
-    )
-    if not active_provider and wf4c_result.get("provider"):
-        active_provider = str(wf4c_result.get("provider", ""))
-        active_model = str(wf4c_result.get("model", ""))
-    if wf4c_result.get("ok") and isinstance(wf4c_result.get("payload"), dict):
-        payload = wf4c_result["payload"]
-        required = bool(payload.get("required"))
-        if required:
-            structure_structured = _normalize_budget_payload(
-                payload,
-                fallback_outputs["livrables"]["budget_structure"]["structured"] or {},
-            )
-            wf4_outputs["livrables"]["budget_structure"] = {
-                "required": True,
-                "structured": structure_structured,
-                "markdown": build_project_budget_markdown(structure_structured),
-                "niveau_certitude": str(payload.get("niveau_certitude", "moyen")).strip(),
-                "justification_requirement": str(payload.get("justification_requirement", "")).strip(),
-            }
-        else:
-            wf4_outputs["livrables"]["budget_structure"] = {
-                "required": False,
-                "structured": None,
-                "markdown": "",
-                "niveau_certitude": str(payload.get("niveau_certitude", "moyen")).strip(),
-                "justification_requirement": str(payload.get("justification_requirement", "")).strip(),
-            }
-        llm_parts_ok += 1
-        meta["parts"]["budget_structure"] = "llm"
+    if prioritize_wf4a and not wf4b_has_dedicated_agent():
+        meta["parts"]["budget_projet"] = "local:priorite_wf4a_google"
+        meta["parts"]["budget_structure"] = "local:priorite_wf4a_google"
     else:
-        meta["parts"]["budget_structure"] = f"fallback:{wf4c_result.get('error', 'llm_error')}"
+        wf4b_result = request_wf4b_llm_payload(
+            wf2a_structured,
+            wf2b_structured,
+            wf3_analysis,
+            provider_override=llm_provider,
+            model_override=llm_model,
+        )
+        if not active_provider and wf4b_result.get("provider"):
+            active_provider = str(wf4b_result.get("provider", ""))
+            active_model = str(wf4b_result.get("model", ""))
+        if wf4b_result.get("ok") and isinstance(wf4b_result.get("payload"), dict):
+            budget_structured = _normalize_budget_payload(
+                wf4b_result["payload"],
+                fallback_outputs["livrables"]["budget_projet"]["structured"],
+            )
+            wf4_outputs["livrables"]["budget_projet"] = {
+                "structured": budget_structured,
+                "markdown": build_project_budget_markdown(budget_structured),
+            }
+            llm_parts_ok += 1
+            if wf4b_result.get("agent_id"):
+                meta["parts"]["budget_projet"] = f"llm_agent:{wf4b_result.get('agent_id')}"
+            else:
+                meta["parts"]["budget_projet"] = "llm"
+        else:
+            meta["parts"]["budget_projet"] = f"fallback:{wf4b_result.get('error', 'llm_error')}"
+
+        if prioritize_wf4a:
+            meta["parts"]["budget_structure"] = "local:priorite_wf4a_google"
+        else:
+            wf4c_result = request_wf4c_llm_payload(
+                wf2a_structured,
+                wf2b_structured,
+                wf3_analysis,
+                provider_override=llm_provider,
+                model_override=llm_model,
+            )
+            if not active_provider and wf4c_result.get("provider"):
+                active_provider = str(wf4c_result.get("provider", ""))
+                active_model = str(wf4c_result.get("model", ""))
+            if wf4c_result.get("ok") and isinstance(wf4c_result.get("payload"), dict):
+                payload = wf4c_result["payload"]
+                required = bool(payload.get("required"))
+                if required:
+                    structure_structured = _normalize_budget_payload(
+                        payload,
+                        fallback_outputs["livrables"]["budget_structure"]["structured"] or {},
+                    )
+                    wf4_outputs["livrables"]["budget_structure"] = {
+                        "required": True,
+                        "structured": structure_structured,
+                        "markdown": build_project_budget_markdown(structure_structured),
+                        "niveau_certitude": str(payload.get("niveau_certitude", "moyen")).strip(),
+                        "justification_requirement": str(payload.get("justification_requirement", "")).strip(),
+                    }
+                else:
+                    wf4_outputs["livrables"]["budget_structure"] = {
+                        "required": False,
+                        "structured": None,
+                        "markdown": "",
+                        "niveau_certitude": str(payload.get("niveau_certitude", "moyen")).strip(),
+                        "justification_requirement": str(payload.get("justification_requirement", "")).strip(),
+                    }
+                llm_parts_ok += 1
+                meta["parts"]["budget_structure"] = "llm"
+            else:
+                meta["parts"]["budget_structure"] = f"fallback:{wf4c_result.get('error', 'llm_error')}"
 
     checklist = list(build_completion_checklist(wf3_analysis, wf2b_structured))
     presentation_extra = wf4_outputs["livrables"]["presentation_projet"]
@@ -1309,13 +1373,23 @@ def resolve_wf4_outputs(
         deduped_checklist.append(item)
     wf4_outputs["livrables"]["points_a_completer"] = deduped_checklist[:18]
 
+    presentation_status = str(meta["parts"].get("presentation_projet", "")).strip()
+    budget_project_status = str(meta["parts"].get("budget_projet", "")).strip()
+    budget_structure_status = str(meta["parts"].get("budget_structure", "")).strip()
+    attempted_part_statuses = [
+        status for status in [presentation_status, budget_project_status, budget_structure_status]
+        if status and not status.startswith("local:")
+    ]
+    successful_part_count = sum(1 for status in attempted_part_statuses if status.startswith("llm"))
+    attempted_part_count = len(attempted_part_statuses)
+
     if llm_parts_ok:
         meta.update(
             {
                 "engine": "llm_direct_python",
                 "provider": active_provider,
                 "model": active_model,
-                "fallback_used": llm_parts_ok < 3,
+                "fallback_used": successful_part_count < attempted_part_count,
                 "budget_project_agent_id": wf4b_result.get("agent_id", ""),
                 "wf4a_usage": wf4a_result.get("usage", {}),
                 "wf4b_usage": wf4b_result.get("usage", {}),

@@ -459,6 +459,98 @@ def first_non_empty_line(text: str) -> str:
     return ""
 
 
+GENERIC_PROJECT_TERMS = {
+    "objectif",
+    "objectifs",
+    "public",
+    "publics",
+    "beneficiaire",
+    "beneficiaires",
+    "budget",
+    "financement",
+    "subvention",
+    "recette",
+    "formation",
+    "production",
+    "contenu",
+    "action",
+    "actions",
+    "atelier",
+    "partenaire",
+    "association",
+    "territoire",
+    "commune",
+    "ville",
+    "port",
+    "reunion",
+    "réunion",
+    "saint",
+    "studio",
+    "technique",
+    "equipe",
+    "équipe",
+}
+
+GENERIC_TITLE_PREFIXES = (
+    "formulaire de demande",
+    "demande d'aide",
+    "fiche d'identite",
+    "fiche d’identité",
+    "presentation du porteur",
+    "présentation du porteur",
+    "activites et moyens",
+    "activités et moyens",
+)
+
+
+def _normalize_text_token(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _looks_like_generic_project_value(value: str) -> bool:
+    normalized = _normalize_text_token(value)
+    if not normalized:
+        return True
+    if normalized in GENERIC_PROJECT_TERMS:
+        return True
+    if len(normalized) <= 3:
+        return True
+    return False
+
+
+def _looks_like_generic_title(value: str) -> bool:
+    normalized = _normalize_text_token(value)
+    if not normalized:
+        return True
+    if any(normalized.startswith(prefix) for prefix in GENERIC_TITLE_PREFIXES):
+        return True
+    return False
+
+
+def _extract_non_generic_keywords(text: str, keywords: list[str], *, limit: int = 6) -> list[str]:
+    selected: list[str] = []
+    for keyword in keywords:
+        if keyword not in text:
+            continue
+        if _looks_like_generic_project_value(keyword):
+            continue
+        selected.append(keyword)
+        if len(selected) >= limit:
+            break
+    return _dedup_strings(selected)
+
+
+def _clean_project_title(text: str, fallback: str = "Non detecte") -> str:
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
+    for line in lines[:12]:
+        if _looks_like_generic_title(line):
+            continue
+        if len(line) < 6:
+            continue
+        return line[:140]
+    return fallback
+
+
 def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
     client_payloads = extract_document_payloads(client_files)
     project_payloads = extract_document_payloads(project_files)
@@ -489,8 +581,8 @@ def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
     project_source = project_payloads[0]["document_name"] if project_payloads else ""
     project_source_text = project_payloads[0]["text"] if project_payloads else ""
 
-    detected_activities = [keyword for keyword in activity_keywords if keyword in client_text]
-    detected_project_elements = [keyword for keyword in project_keywords if keyword in project_text]
+    detected_activities = _extract_non_generic_keywords(client_text, activity_keywords, limit=8)
+    detected_project_elements = _extract_non_generic_keywords(project_text, project_keywords, limit=8)
 
     profil_client = {
         "forme_juridique": build_field_value(
@@ -565,9 +657,9 @@ def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
         ],
         "nom_structure": build_field_value(
             "nom_structure",
-            first_non_empty_line(client_source_text) or Path(client_source).stem if client_source else "Non detecte",
+            _clean_project_title(client_source_text, Path(client_source).stem if client_source else "Non detecte"),
             client_source,
-            find_source_excerpt(client_source_text, first_non_empty_line(client_source_text)) if client_source_text else "",
+            find_source_excerpt(client_source_text, _clean_project_title(client_source_text, "")) if client_source_text else "",
             confidence="moyen" if client_source else "bas",
             validation_required=not client_source,
         ),
@@ -576,9 +668,9 @@ def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
     donnees_projet = {
         "titre_projet": build_field_value(
             "titre_projet",
-            first_non_empty_line(project_source_text) or "Non detecte",
+            _clean_project_title(project_source_text, "Non detecte"),
             project_source,
-            find_source_excerpt(project_source_text, first_non_empty_line(project_source_text)) if project_source_text else "",
+            find_source_excerpt(project_source_text, _clean_project_title(project_source_text, "")) if project_source_text else "",
             confidence="moyen" if project_source_text else "bas",
             validation_required=not project_source_text,
         ),
@@ -598,7 +690,7 @@ def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
                 find_source_excerpt(project_source_text, keyword),
                 confidence="moyen",
             )
-            for keyword in [item for item in ["contexte", "besoin", "enjeu", "constat", "diagnostic"] if item in project_text][:6]
+            for keyword in _extract_non_generic_keywords(project_text, ["contexte", "besoin", "enjeu", "constat", "diagnostic"], limit=6)
         ],
         "objectifs": [
             build_field_value(
@@ -608,7 +700,7 @@ def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
                 find_source_excerpt(project_source_text, keyword),
                 confidence="moyen",
             )
-            for keyword in [item for item in ["objectif", "ambition", "finalite"] if item in project_text][:6]
+            for keyword in _extract_non_generic_keywords(project_text, ["objectif", "ambition", "finalite"], limit=6)
         ],
         "actions_prevues": [
             build_field_value(
@@ -618,7 +710,7 @@ def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
                 find_source_excerpt(project_source_text, keyword),
                 confidence="moyen",
             )
-            for keyword in [item for item in ["action", "atelier", "accompagnement", "production", "diffusion", "formation"] if item in project_text][:8]
+            for keyword in _extract_non_generic_keywords(project_text, ["action", "atelier", "accompagnement", "production", "diffusion", "formation"], limit=8)
         ],
         "publics_cibles": [
             build_field_value(
@@ -628,7 +720,7 @@ def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
                 find_source_excerpt(project_source_text, keyword),
                 confidence="moyen",
             )
-            for keyword in [item for item in ["public", "beneficiaire", "jeune", "artiste", "association", "habitant"] if item in project_text][:8]
+            for keyword in _extract_non_generic_keywords(project_text, ["public", "beneficiaire", "jeune", "artiste", "association", "habitant"], limit=8)
         ],
         "territoire_concerne": [
             build_field_value(
@@ -638,7 +730,7 @@ def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
                 find_source_excerpt(project_source_text, keyword),
                 confidence="moyen",
             )
-            for keyword in [item for item in ["reunion", "réunion", "quartier", "commune", "territoire", "port", "saint"] if item in project_text][:8]
+            for keyword in _extract_non_generic_keywords(project_text, ["reunion", "réunion", "quartier", "commune", "territoire", "port", "saint"], limit=8)
         ],
         "dates_detectees": [
             build_field_value(
@@ -668,7 +760,7 @@ def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
                 find_source_excerpt(project_source_text, keyword),
                 confidence="moyen",
             )
-            for keyword in [item for item in ["partenaire", "commune", "ville", "institution", "association"] if item in project_text][:8]
+            for keyword in _extract_non_generic_keywords(project_text, ["partenaire", "commune", "ville", "institution", "association"], limit=8)
         ],
         "moyens_humains_techniques": [
             build_field_value(
@@ -678,7 +770,7 @@ def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
                 find_source_excerpt(project_source_text, keyword),
                 confidence="moyen",
             )
-            for keyword in [item for item in ["equipe", "materiel", "studio", "technique", "encadrement", "ressource"] if item in project_text][:8]
+            for keyword in _extract_non_generic_keywords(project_text, ["equipe", "materiel", "studio", "technique", "encadrement", "ressource"], limit=8)
         ],
         "livrables_prevus": [
             build_field_value(
@@ -688,7 +780,7 @@ def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
                 find_source_excerpt(project_source_text, keyword),
                 confidence="moyen",
             )
-            for keyword in [item for item in ["livrable", "video", "contenu", "diffusion", "evaluation", "resultat"] if item in project_text][:8]
+            for keyword in _extract_non_generic_keywords(project_text, ["livrable", "video", "contenu", "diffusion", "evaluation", "resultat"], limit=8)
         ],
         "cofinancements": [
             build_field_value(
@@ -698,7 +790,7 @@ def extract_wf2b_structured(client_files, project_files) -> dict[str, object]:
                 find_source_excerpt(project_source_text, keyword),
                 confidence="moyen",
             )
-            for keyword in [item for item in ["cofinancement", "autofinancement", "subvention", "recette", "financeur"] if item in project_text][:8]
+            for keyword in _extract_non_generic_keywords(project_text, ["cofinancement", "autofinancement", "subvention", "recette", "financeur"], limit=8)
         ],
     }
 

@@ -52,6 +52,18 @@ from app.services.llm_client import (
 )
 
 
+def is_google_quota_exhausted_error(error: object) -> bool:
+    text = str(error or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "resource_exhausted" in text
+        or "quota exceeded" in text
+        or "generate_content_free_tier_requests" in text
+        or "429" in text
+    )
+
+
 def _presentation_section_min_length(section_type: str) -> int:
     major_sections = {"structure", "contexte", "publics", "methodologie", "moyens", "budget"}
     if section_type in major_sections:
@@ -683,6 +695,11 @@ def _resolve_wf4a_provider_override(provider_override: str | None) -> str | None
     return None
 
 
+def wf4b_has_dedicated_agent() -> bool:
+    mistral_settings = load_llm_settings(provider_override="mistral")
+    return bool(mistral_settings.mistral_api_key and mistral_settings.mistral_budget_project_agent_id.strip())
+
+
 def request_wf4a_llm_payload(
     wf2a_structured: dict[str, object],
     wf2b_structured: dict[str, object],
@@ -706,12 +723,13 @@ def request_wf4a_llm_payload(
             "usage": llm_result.get("usage", {}),
             "provider": llm_result.get("provider", ""),
             "model": llm_result.get("model", ""),
+            "quota_exhausted": is_google_quota_exhausted_error(llm_result.get("error", "")),
         }
 
     parsed_payload, parse_error = parse_json_response(str(llm_result.get("text", "")))
     repair_usage: dict[str, object] = {}
     repair_model = ""
-    if parse_error is not None:
+    if parse_error is not None and not is_google_quota_exhausted_error(parse_error):
         repair_result = repair_json_response_with_llm(
             str(llm_result.get("text", "")),
             provider_override=wf4a_provider_override,
@@ -724,7 +742,11 @@ def request_wf4a_llm_payload(
         repair_model = str(repair_result.get("model", "")).strip()
     if parse_error is None and isinstance(parsed_payload, dict) and _looks_like_json_schema_payload(parsed_payload):
         parse_error = "schema_reproduit_au_lieu_des_donnees"
-    if parse_error is None and isinstance(parsed_payload, dict) and not _payload_has_substantive_presentation_content(parsed_payload):
+    if (
+        parse_error is None
+        and isinstance(parsed_payload, dict)
+        and not _payload_has_substantive_presentation_content(parsed_payload)
+    ):
         retry_prompt = (
             _build_wf4_payload(wf2a_structured, wf2b_structured, wf3_analysis)
             + "\n\nConsigne renforcee : la premiere version etait trop succincte. "
@@ -766,6 +788,7 @@ def request_wf4a_llm_payload(
         "provider": llm_result.get("provider", ""),
         "model": llm_result.get("model", ""),
         "raw_text": llm_result.get("text", ""),
+        "quota_exhausted": is_google_quota_exhausted_error(parse_error),
     }
 
 
@@ -777,10 +800,10 @@ def request_wf4b_llm_payload(
     model_override: str | None = None,
 ) -> dict[str, object]:
     payload_text = _build_wf4_payload(wf2a_structured, wf2b_structured, wf3_analysis)
-    settings = load_llm_settings(provider_override=provider_override, model_override=model_override)
-    budget_project_agent_id = settings.mistral_budget_project_agent_id.strip()
+    agent_settings = load_llm_settings(provider_override="mistral")
+    budget_project_agent_id = agent_settings.mistral_budget_project_agent_id.strip()
 
-    if settings.provider == "mistral" and budget_project_agent_id:
+    if agent_settings.mistral_api_key and budget_project_agent_id:
         agent_user_prompt = (
             "Produis uniquement les donnees finales du budget projet, conformes au schema JSON de l'agent. "
             "Ne recopie jamais le schema. Ne retourne jamais `type`, `properties`, `required` ou `title`.\n\n"
@@ -790,9 +813,10 @@ def request_wf4b_llm_payload(
             budget_project_agent_id,
             agent_user_prompt,
             max_tokens=5000,
-            provider_override=provider_override,
+            provider_override="mistral",
         )
     else:
+        settings = load_llm_settings(provider_override=provider_override, model_override=model_override)
         llm_result = call_llm_message(
             WF4B_SYSTEM_PROMPT,
             payload_text,
@@ -808,7 +832,7 @@ def request_wf4b_llm_payload(
             "usage": llm_result.get("usage", {}),
             "provider": llm_result.get("provider", ""),
             "model": llm_result.get("model", ""),
-            "agent_id": budget_project_agent_id if settings.provider == "mistral" and budget_project_agent_id else "",
+            "agent_id": budget_project_agent_id if budget_project_agent_id else "",
         }
 
     parsed_payload, parse_error = parse_json_response(str(llm_result.get("text", "")))
@@ -829,7 +853,7 @@ def request_wf4b_llm_payload(
         "provider": llm_result.get("provider", ""),
         "model": llm_result.get("model", ""),
         "raw_text": llm_result.get("text", ""),
-        "agent_id": budget_project_agent_id if settings.provider == "mistral" and budget_project_agent_id else "",
+        "agent_id": budget_project_agent_id if budget_project_agent_id else "",
     }
 
 
@@ -905,10 +929,11 @@ def request_wf4a_section_payload(
             "usage": llm_result.get("usage", {}),
             "provider": llm_result.get("provider", ""),
             "model": llm_result.get("model", ""),
+            "quota_exhausted": is_google_quota_exhausted_error(llm_result.get("error", "")),
         }
 
     parsed_payload, parse_error = parse_json_response(str(llm_result.get("text", "")))
-    if parse_error is not None:
+    if parse_error is not None and not is_google_quota_exhausted_error(parse_error):
         repair_result = repair_json_response_with_llm(
             str(llm_result.get("text", "")),
             provider_override=wf4a_provider_override,
@@ -920,9 +945,13 @@ def request_wf4a_section_payload(
     section_type = str(section_payload.get("section_type", "")).strip() or infer_presentation_section_type(
         str(section_payload.get("titre", "")).strip()
     )
-    if parse_error is None and isinstance(parsed_payload, dict) and not _payload_has_substantive_presentation_content(
-        parsed_payload,
-        section_type=section_type,
+    if (
+        parse_error is None
+        and isinstance(parsed_payload, dict)
+        and not _payload_has_substantive_presentation_content(
+            parsed_payload,
+            section_type=section_type,
+        )
     ):
         retry_payload = dict(payload)
         retry_payload["consigne_renforcee"] = (
@@ -962,4 +991,5 @@ def request_wf4a_section_payload(
         "provider": llm_result.get("provider", ""),
         "model": llm_result.get("model", ""),
         "raw_text": llm_result.get("text", ""),
+        "quota_exhausted": is_google_quota_exhausted_error(parse_error),
     }

@@ -39,6 +39,30 @@ def _split_joined_values(value: str) -> list[str]:
     return [item.strip() for item in value.split("|") if item.strip()]
 
 
+def _joined_value_or_placeholder(value: str) -> str:
+    return value if value and value != "A completer" else "A_COMPLETER"
+
+
+def _has_concrete_value(value: str) -> bool:
+    normalized = str(value or "").strip()
+    return normalized not in {"", "A completer", "A_COMPLETER", "Non detecte", "Non detectee"}
+
+
+def _build_fact_sentence(label: str, value: str) -> str:
+    if not _has_concrete_value(value):
+        return ""
+    return f"{label} : {value}."
+
+
+def _build_missing_section_message(section_focus: str, source_document: str = "") -> str:
+    source_text = f" Source principale : {source_document}." if source_document else ""
+    return (
+        f"A_COMPLETER. Les informations necessaires pour la section `{section_focus}` n'ont pas ete extraites de maniere suffisamment fiable depuis le dossier actuel."
+        + source_text
+        + " Cette partie ne doit pas etre meublee generiquement : elle doit etre reprise a partir du contenu reel du dossier ou completee manuellement."
+    )
+
+
 def _infer_call_requirements(wf3_analysis: dict[str, object]) -> dict[str, Any]:
     results = list(wf3_analysis.get("resultats_criteres", []))
     combined = " ".join(
@@ -285,11 +309,13 @@ def build_project_presentation_sections(wf2b_structured: dict[str, object], wf3_
 
     structure_name = _field_value(profil_client.get("nom_structure"))
     legal_form = _field_value(profil_client.get("forme_juridique"))
+    structure_source = _field_source(profil_client.get("nom_structure"))
     activities = _join_field_values(profil_client.get("activites", []))
     territory_implantation = _field_value(profil_client.get("territoire_implantation"))
     references = _join_field_values(profil_client.get("historique_references", []))
     capacities = _join_field_values(profil_client.get("capacites_porteuses", []))
     title = _field_value(donnees_projet.get("titre_projet"))
+    project_title_source = _field_source(donnees_projet.get("titre_projet"))
     project_elements = _join_field_values(donnees_projet.get("elements_detectes", []))
     project_dates = _join_field_values(donnees_projet.get("dates_detectees", []))
     project_amount = _field_value(donnees_projet.get("montant_detecte"))
@@ -314,17 +340,11 @@ def build_project_presentation_sections(wf2b_structured: dict[str, object], wf3_
         + (f" implantee sur **{territory_implantation}**." if territory_implantation != "A completer" else "."),
     ]
     if context_needs != "A completer":
-        resume_lines.append(
-            f"Il repond a un besoin ou contexte identifie : {context_needs}."
-        )
+        resume_lines.append(f"Il repond a un besoin ou contexte identifie : {context_needs}.")
     if objectifs != "A completer":
-        resume_lines.append(
-            f"Les objectifs actuellement documentes sont les suivants : {objectifs}."
-        )
+        resume_lines.append(f"Les objectifs actuellement documentes sont les suivants : {objectifs}.")
     if actions != "A completer":
-        resume_lines.append(
-            f"Les actions prevues a ce stade comprennent : {actions}."
-        )
+        resume_lines.append(f"Les actions prevues a ce stade comprennent : {actions}.")
     if publics != "A completer" or territoire != "A completer":
         resume_lines.append(
             f"Le projet vise prioritairement {publics if publics != 'A completer' else 'A_COMPLETER'}"
@@ -335,9 +355,73 @@ def build_project_presentation_sections(wf2b_structured: dict[str, object], wf3_
             f"Le budget actuellement repere autour de **{project_amount}** devra etre confirme et ventile selon la trame attendue."
         )
     if missing_actions:
-        resume_lines.append(
-            "Plusieurs points restent a consolider avant depot : " + " | ".join(missing_actions[:4]) + "."
-        )
+        resume_lines.append("Plusieurs points restent a consolider avant depot : " + " | ".join(missing_actions[:4]) + ".")
+
+    if not _has_concrete_value(context_needs) and not _has_concrete_value(objectifs) and not _has_concrete_value(actions):
+        resume_lines.append(_build_missing_section_message("resume du projet", project_title_source))
+
+    structure_parts = [
+        _build_fact_sentence("Structure porteuse detectee", structure_name),
+        _build_fact_sentence("Forme juridique", legal_form),
+        _build_fact_sentence("Implantation", territory_implantation),
+        _build_fact_sentence("Activites reperees", activities),
+        _build_fact_sentence("References reperees", references),
+        _build_fact_sentence("Capacites reperees", capacities),
+    ]
+    structure_text = "\n\n".join(part for part in structure_parts if part)
+    if not structure_text:
+        structure_text = _build_missing_section_message("presentation de la structure porteuse", structure_source)
+
+    contexte_parts = [
+        _build_fact_sentence("Titre projet detecte", title),
+        _build_fact_sentence("Contexte / besoin repere", context_needs),
+        _build_fact_sentence("Elements projet reperes", project_elements),
+        _build_fact_sentence("Objectifs reperes", objectifs),
+    ]
+    contexte_text = "\n\n".join(part for part in contexte_parts if part)
+    if not contexte_text:
+        contexte_text = _build_missing_section_message("contexte, besoin et description detaillee du projet", project_title_source)
+
+    objectifs_text = _build_fact_sentence("Objectifs reperes", objectifs)
+    if not objectifs_text:
+        objectifs_text = _build_missing_section_message("objectifs du projet", project_title_source)
+
+    actions_text = _build_fact_sentence("Actions reperees", actions)
+    if not actions_text:
+        actions_text = _build_missing_section_message("description des actions prevues", project_title_source)
+
+    publics_parts = [
+        _build_fact_sentence("Publics cibles reperes", publics),
+        _build_fact_sentence("Territoire repere", territoire),
+    ]
+    publics_text = "\n\n".join(part for part in publics_parts if part)
+    if not publics_text:
+        publics_text = _build_missing_section_message("publics cibles, beneficiaires et territoire", project_title_source)
+
+    methodologie_parts = [
+        _build_fact_sentence("Dates / jalons reperes", project_dates),
+        _build_fact_sentence("Etapes ou actions reperees", actions),
+    ]
+    methodologie_text = "\n\n".join(part for part in methodologie_parts if part)
+    if not methodologie_text:
+        methodologie_text = _build_missing_section_message("methodologie, calendrier et mise en oeuvre", project_title_source)
+
+    moyens_parts = [
+        _build_fact_sentence("Moyens humains ou techniques reperes", moyens),
+        _build_fact_sentence("Partenariats reperes", partnerships),
+    ]
+    moyens_text = "\n\n".join(part for part in moyens_parts if part)
+    if not moyens_text:
+        moyens_text = _build_missing_section_message("moyens mobilises et partenariats", project_title_source)
+
+    budget_parts = [
+        _build_fact_sentence("Montant repere", project_amount),
+        _build_fact_sentence("Cofinancements reperes", cofinancements),
+        _build_fact_sentence("Livrables reperes", livrables),
+    ]
+    budget_text = "\n\n".join(part for part in budget_parts if part)
+    if not budget_text:
+        budget_text = _build_missing_section_message("livrables, budget et plan de financement", project_title_source)
 
     sections = [
         {
@@ -348,69 +432,52 @@ def build_project_presentation_sections(wf2b_structured: dict[str, object], wf3_
         {
             "section": "2. Presentation de la structure porteuse",
             "statut": "partiel" if structure_name != "A completer" else "a_completer",
-            "contenu": (
-                f"La structure porteuse identifiee est **{structure_name}**, de forme juridique **{legal_form}**.\n\n"
-                f"Ses activites ou champs d'intervention documentes sont : {activities}.\n\n"
-                f"Ses references ou experiences disponibles a ce stade sont : {references if references != 'A completer' else 'A_COMPLETER'}.\n\n"
-                f"Les capacites de portage, humaines ou techniques, actuellement reperees sont : {capacities if capacities != 'A completer' else 'A_COMPLETER'}.\n\n"
-                "Cette section devra etre completee avec des elements de credibilite : anciennete, projets similaires, equipe, equipements, partenariats structurels et capacite de gestion."
-            ),
+            "contenu": structure_text,
         },
         {
             "section": "3. Contexte, besoin et description detaillee du projet",
             "statut": "partiel" if project_elements != "A completer" or context_needs != "A completer" else "a_completer",
-            "contenu": (
-                f"Le projet **{title}** s'inscrit dans le contexte suivant : {context_needs if context_needs != 'A completer' else 'A_COMPLETER'}.\n\n"
-                f"Les elements deja reperes dans la documentation projet sont : {project_elements if project_elements != 'A completer' else 'A_COMPLETER'}.\n\n"
-                f"Les objectifs explicitement identifies sont : {objectifs if objectifs != 'A completer' else 'A_COMPLETER'}.\n\n"
-                "Cette partie doit decrire de maniere narrative le probleme traite, la reponse proposee, la logique d'intervention et la valeur du projet par rapport aux attendus du financeur."
-            ),
+            "contenu": contexte_text,
         },
         {
-            "section": "4. Publics, territoire et beneficiaires",
+            "section": "4. Objectifs du projet",
+            "statut": "partiel" if objectifs != "A completer" else "a_completer",
+            "contenu": objectifs_text,
+        },
+        {
+            "section": "5. Description des actions prevues",
+            "statut": "partiel" if actions != "A completer" else "a_completer",
+            "contenu": actions_text,
+        },
+        {
+            "section": "6. Publics cibles, beneficiaires et territoire",
             "statut": "partiel" if publics != "A completer" or territoire != "A completer" else "a_completer",
-            "contenu": (
-                f"Les publics cibles identifies a ce stade sont : {publics if publics != 'A completer' else 'A_COMPLETER'}.\n\n"
-                f"Le territoire ou perimetre d'intervention documente est : {territoire if territoire != 'A completer' else 'A_COMPLETER'}.\n\n"
-                "Il faut encore preciser le volume de beneficiaires attendus, les modalites de selection ou mobilisation des publics et l'impact territorial concret du projet."
-            ),
+            "contenu": publics_text,
         },
         {
-            "section": "5. Methodologie, calendrier et mise en oeuvre",
+            "section": "7. Methodologie, calendrier et mise en oeuvre",
             "statut": "partiel" if requirements["planning_required"] or project_dates != "A completer" or actions != "A completer" else "a_completer",
-            "contenu": (
-                f"Les dates, periodes ou jalons actuellement detectes sont : {project_dates if project_dates != 'A completer' else 'A_COMPLETER'}.\n\n"
-                f"Les actions ou etapes prevues sont : {actions if actions != 'A completer' else 'A_COMPLETER'}.\n\n"
-                "La methode devra ensuite etre ordonnee en phases claires : preparation, mobilisation, mise en oeuvre, diffusion, suivi et evaluation, avec une articulation precise entre calendrier et actions."
-            ),
+            "contenu": methodologie_text,
         },
         {
-            "section": "6. Moyens mobilises et partenariats",
+            "section": "8. Moyens mobilises et partenariats",
             "statut": "partiel" if moyens != "A completer" or partnerships != "A completer" else "a_completer",
-            "contenu": (
-                f"Les moyens humains ou techniques reperes sont : {moyens if moyens != 'A completer' else 'A_COMPLETER'}.\n\n"
-                f"Les partenariats, appuis institutionnels ou relais identifies sont : {partnerships if partnerships != 'A_COMPLETER' else 'A_COMPLETER'}.\n\n"
-                "Cette section devra preciser qui fait quoi, avec quels moyens, quels appuis, et comment ces ressources garantissent la faisabilite du projet."
-            ),
+            "contenu": moyens_text,
         },
         {
-            "section": "7. Livrables, budget et plan de financement",
+            "section": "9. Livrables, budget et plan de financement",
             "statut": "partiel" if requirements["budget_required"] or project_amount != "A completer" or livrables != "A completer" else "a_completer",
-            "contenu": (
-                f"Les livrables ou resultats attendus identifies sont : {livrables if livrables != 'A completer' else 'A_COMPLETER'}.\n\n"
-                f"Le montant actuellement repere est : {project_amount if project_amount != 'A completer' else 'A_COMPLETER'}.\n\n"
-                f"Les informations de cofinancement ou d'autofinancement disponibles sont : {cofinancements if cofinancements != 'A completer' else 'A_COMPLETER'}.\n\n"
-                "Le budget detaille devra etre ventile en charges et produits, verifie en equilibre, et aligne sur les exigences explicites de l'appel a projet."
-            ),
+            "contenu": budget_text,
         },
         {
-            "section": "8. Pieces et points a completer",
+            "section": "10. Pieces et points a completer",
             "statut": "a_completer" if missing_actions or pieces_justificatifs else "partiel",
             "contenu": (
                 "Points d'attention identifies : "
                 + (" | ".join(missing_actions[:8]) if missing_actions else "Aucun point critique remonte.")
                 + "\n\nPieces et justificatifs a verifier : "
                 + (" | ".join(pieces_justificatifs[:8]) if pieces_justificatifs else "A_PRECISER")
+                + "\n\nCette section doit servir de checklist de finalisation du dossier. Elle doit permettre de distinguer les informations a confirmer, les annexes a joindre, les justificatifs a retrouver et les arbitrages encore necessaires avant depot."
             ),
         },
     ]
