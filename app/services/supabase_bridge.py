@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import os
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 import re
 import unicodedata
+
+SUPABASE_CONNECT_TIMEOUT = 8  # secondes — échoue vite si le projet est en pause
 
 from app.services.env_loader import get_env_value, load_project_env
 
@@ -41,12 +44,30 @@ def load_supabase_settings() -> SupabaseSettings:
     )
 
 
+def _supabase_reachable(url: str, timeout: int = SUPABASE_CONNECT_TIMEOUT) -> bool:
+    """Vérifie en TCP si le host Supabase est joignable, sans attendre le timeout HTTP."""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        sock = socket.create_connection((host, port), timeout=timeout)
+        sock.close()
+        return True
+    except Exception:
+        return False
+
+
 def create_supabase_client(use_service_role: bool | None = None):
     settings = load_supabase_settings()
     if use_service_role is None:
         use_service_role = bool(settings.service_role_key)
     key = settings.service_role_key if use_service_role and settings.service_role_key else settings.anon_key
     if not settings.url or not key:
+        return None
+
+    # Vérification TCP rapide — évite un timeout HTTP de 80+ secondes si projet en pause
+    if not _supabase_reachable(settings.url):
         return None
 
     try:
