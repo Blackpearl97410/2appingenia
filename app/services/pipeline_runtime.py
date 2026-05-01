@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import re
+import time
 
 from app.services.wf2 import (
     VALID_CONFIDENCE,
@@ -223,9 +224,11 @@ def resolve_wf2a_structured(
     llm_provider: str | None = None,
     llm_model: str | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
+    started_at = time.perf_counter()
     fallback = extract_wf2a_structured(dossier_files)
     meta = {"engine": "heuristique_locale", "fallback_used": False}
     if not prefer_llm or not dossier_files:
+        meta["duration_ms"] = _elapsed_ms(started_at)
         return fallback, meta
 
     llm_result = request_wf2a_llm_payload(
@@ -235,6 +238,7 @@ def resolve_wf2a_structured(
     )
     if not llm_result.get("ok") or not isinstance(llm_result.get("payload"), dict):
         meta.update({"fallback_used": True, "llm_error": llm_result.get("error", "llm_error")})
+        meta["duration_ms"] = _elapsed_ms(started_at)
         return fallback, meta
 
     structured = normalize_wf2a_llm_payload(llm_result["payload"], fallback)
@@ -245,6 +249,7 @@ def resolve_wf2a_structured(
         "usage": llm_result.get("usage", {}),
         "fallback_used": False,
     })
+    meta["duration_ms"] = _elapsed_ms(started_at)
     return structured, meta
 
 
@@ -255,9 +260,11 @@ def resolve_wf2b_structured(
     llm_provider: str | None = None,
     llm_model: str | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
+    started_at = time.perf_counter()
     fallback = extract_wf2b_structured(client_files, project_files)
     meta = {"engine": "heuristique_locale", "fallback_used": False}
     if not prefer_llm or (not client_files and not project_files):
+        meta["duration_ms"] = _elapsed_ms(started_at)
         return fallback, meta
 
     llm_result = request_wf2b_llm_payload(
@@ -268,6 +275,7 @@ def resolve_wf2b_structured(
     )
     if not llm_result.get("ok") or not isinstance(llm_result.get("payload"), dict):
         meta.update({"fallback_used": True, "llm_error": llm_result.get("error", "llm_error")})
+        meta["duration_ms"] = _elapsed_ms(started_at)
         return fallback, meta
 
     structured = normalize_wf2b_llm_payload(llm_result["payload"], fallback)
@@ -278,6 +286,7 @@ def resolve_wf2b_structured(
         "usage": llm_result.get("usage", {}),
         "fallback_used": False,
     })
+    meta["duration_ms"] = _elapsed_ms(started_at)
     return structured, meta
 
 
@@ -289,9 +298,11 @@ def resolve_wf3_analysis(
     llm_provider: str | None = None,
     llm_model: str | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
+    started_at = time.perf_counter()
     fallback = build_wf3_analysis(wf2a_structured, wf2b_structured, global_context_bridge)
     meta = {"engine": "heuristique_locale", "fallback_used": False}
     if not prefer_llm:
+        meta["duration_ms"] = _elapsed_ms(started_at)
         return fallback, meta
 
     llm_result = request_wf3_llm_payload(
@@ -303,6 +314,7 @@ def resolve_wf3_analysis(
     )
     if not llm_result.get("ok") or not isinstance(llm_result.get("payload"), dict):
         meta.update({"fallback_used": True, "llm_error": llm_result.get("error", "llm_error")})
+        meta["duration_ms"] = _elapsed_ms(started_at)
         return fallback, meta
 
     structured = normalize_wf3_llm_payload(llm_result["payload"], fallback)
@@ -313,11 +325,16 @@ def resolve_wf3_analysis(
         "usage": llm_result.get("usage", {}),
         "fallback_used": False,
     })
+    meta["duration_ms"] = _elapsed_ms(started_at)
     return structured, meta
 
 
 def _dedup_strings(items: list[str]) -> list[str]:
     return list(dict.fromkeys(item.strip() for item in items if str(item).strip()))
+
+
+def _elapsed_ms(start_time: float) -> int:
+    return int((time.perf_counter() - start_time) * 1000)
 
 
 def _normalize_presentation_payload(payload: dict[str, object], fallback_outputs: dict[str, object]) -> dict[str, object]:
@@ -507,6 +524,23 @@ def _presentation_section_attempt_limit(provider: str, model: str) -> int:
         if "flash" in model_norm:
             return 3
     return 6
+
+
+def _presentation_needs_section_enrichment(presentation_payload: object) -> bool:
+    if not isinstance(presentation_payload, dict):
+        return True
+    sections = presentation_payload.get("sections", [])
+    if not isinstance(sections, list) or not sections:
+        return True
+    substantive_sections = 0
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        content = str(section.get("contenu", "")).strip()
+        status = str(section.get("statut", "")).strip().lower()
+        if len(content) >= 800 and status in {"redige", "partiel"}:
+            substantive_sections += 1
+    return substantive_sections < min(3, len(sections))
 
 
 def _should_prioritize_wf4a_over_budget_llm(provider: str, model: str) -> bool:
@@ -1137,9 +1171,11 @@ def resolve_wf4_outputs(
     llm_provider: str | None = None,
     llm_model: str | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
+    started_at = time.perf_counter()
     fallback_outputs = build_wf4_outputs(wf2b_structured, wf3_analysis)
-    meta = {"engine": "heuristique_locale", "fallback_used": False, "parts": {}}
+    meta = {"engine": "heuristique_locale", "fallback_used": False, "parts": {}, "durations_ms": {}}
     if not prefer_llm:
+        meta["duration_ms"] = _elapsed_ms(started_at)
         return fallback_outputs, meta
 
     wf4_outputs = deepcopy(fallback_outputs)
@@ -1150,6 +1186,7 @@ def resolve_wf4_outputs(
     wf4c_result: dict[str, object] = {"usage": {}}
 
     modular_base_sections = list(fallback_outputs["livrables"]["presentation_projet"].get("sections", []))
+    wf4a_started_at = time.perf_counter()
     wf4a_result = request_wf4a_llm_payload(
         wf2a_structured,
         wf2b_structured,
@@ -1157,6 +1194,7 @@ def resolve_wf4_outputs(
         provider_override=llm_provider,
         model_override=llm_model,
     )
+    meta["durations_ms"]["WF4A"] = _elapsed_ms(wf4a_started_at)
     if wf4a_result.get("provider"):
         active_provider = str(wf4a_result.get("provider", ""))
         active_model = str(wf4a_result.get("model", ""))
@@ -1181,7 +1219,13 @@ def resolve_wf4_outputs(
     global_wf4a_quota_exhausted = bool(wf4a_result.get("quota_exhausted")) or is_google_quota_exhausted_error(
         wf4a_result.get("error", "")
     )
-    if modular_base_sections and not global_wf4a_quota_exhausted:
+    should_run_wf4a_sections = (
+        modular_base_sections
+        and not global_wf4a_quota_exhausted
+        and (not wf4a_result.get("ok") or _presentation_needs_section_enrichment(presentation_payload))
+    )
+    if should_run_wf4a_sections:
+        wf4a_sections_started_at = time.perf_counter()
         effective_provider = str(llm_provider or active_provider or "").strip().lower()
         effective_model = str(llm_model or active_model or "").strip().lower()
         section_attempt_limit = _presentation_section_attempt_limit(effective_provider, effective_model)
@@ -1254,8 +1298,13 @@ def resolve_wf4_outputs(
                     "llm_error",
                 )
                 meta["parts"]["presentation_sections"] = f"fallback:{first_error}"
+        meta["durations_ms"]["WF4A_sections"] = _elapsed_ms(wf4a_sections_started_at)
     elif global_wf4a_quota_exhausted:
         meta["parts"]["presentation_sections"] = "fallback:quota_google_epuise"
+        meta["durations_ms"]["WF4A_sections"] = 0
+    else:
+        meta["parts"]["presentation_sections"] = "skipped:global_suffisant"
+        meta["durations_ms"]["WF4A_sections"] = 0
 
     # En mode modulaire, la presentation peut etre consideree comme LLM si un noyau
     # suffisant de sections a ete effectivement compose, meme si le payload global rate.
@@ -1273,7 +1322,10 @@ def resolve_wf4_outputs(
     if prioritize_wf4a and not wf4b_has_dedicated_agent():
         meta["parts"]["budget_projet"] = "local:priorite_wf4a_google"
         meta["parts"]["budget_structure"] = "local:priorite_wf4a_google"
+        meta["durations_ms"]["WF4B"] = 0
+        meta["durations_ms"]["WF4C"] = 0
     else:
+        wf4b_started_at = time.perf_counter()
         wf4b_result = request_wf4b_llm_payload(
             wf2a_structured,
             wf2b_structured,
@@ -1281,6 +1333,7 @@ def resolve_wf4_outputs(
             provider_override=llm_provider,
             model_override=llm_model,
         )
+        meta["durations_ms"]["WF4B"] = _elapsed_ms(wf4b_started_at)
         if not active_provider and wf4b_result.get("provider"):
             active_provider = str(wf4b_result.get("provider", ""))
             active_model = str(wf4b_result.get("model", ""))
@@ -1303,7 +1356,9 @@ def resolve_wf4_outputs(
 
         if prioritize_wf4a:
             meta["parts"]["budget_structure"] = "local:priorite_wf4a_google"
+            meta["durations_ms"]["WF4C"] = 0
         else:
+            wf4c_started_at = time.perf_counter()
             wf4c_result = request_wf4c_llm_payload(
                 wf2a_structured,
                 wf2b_structured,
@@ -1311,6 +1366,7 @@ def resolve_wf4_outputs(
                 provider_override=llm_provider,
                 model_override=llm_model,
             )
+            meta["durations_ms"]["WF4C"] = _elapsed_ms(wf4c_started_at)
             if not active_provider and wf4c_result.get("provider"):
                 active_provider = str(wf4c_result.get("provider", ""))
                 active_model = str(wf4c_result.get("model", ""))
@@ -1396,6 +1452,7 @@ def resolve_wf4_outputs(
                 "wf4c_usage": wf4c_result.get("usage", {}),
             }
         )
+        meta["duration_ms"] = _elapsed_ms(started_at)
         return wf4_outputs, meta
 
     meta.update(
@@ -1410,6 +1467,7 @@ def resolve_wf4_outputs(
             "wf4c_usage": wf4c_result.get("usage", {}),
         }
     )
+    meta["duration_ms"] = _elapsed_ms(started_at)
     return fallback_outputs, meta
 
 
@@ -1424,6 +1482,7 @@ def resolve_pipeline_outputs(
     llm_provider: str | None = None,
     llm_model: str | None = None,
 ) -> dict[str, object]:
+    started_at = time.perf_counter()
     wf2a_structured, wf2a_meta = resolve_wf2a_structured(
         dossier_files,
         prefer_llm=prefer_llm,
@@ -1468,6 +1527,7 @@ def resolve_pipeline_outputs(
         "wf4": wf4_outputs,
         "execution": {
             "prefer_llm": prefer_llm,
+            "duration_ms": _elapsed_ms(started_at),
             "llm_selection": {
                 "provider": llm_provider or "",
                 "model": llm_model or "",

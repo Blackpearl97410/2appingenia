@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -132,21 +133,25 @@ def persist_pipeline_outputs(
     pipeline_outputs: dict[str, object],
     selected_client_id: str | None = None,
 ) -> dict[str, object]:
+    started_at = time.perf_counter()
     ensure_private_documents_bucket()
     settings = load_supabase_settings()
     client = create_supabase_client(use_service_role=True)
     if client is None:
-        return {"ok": False, "error": "client_supabase_non_configure"}
+        return {"ok": False, "error": "client_supabase_non_configure", "duration_ms": int((time.perf_counter() - started_at) * 1000)}
 
     try:
-        return _persist_pipeline_outputs_inner(
+        result = _persist_pipeline_outputs_inner(
             client, settings,
             dossier_files, client_files, project_files,
             pipeline_outputs,
             selected_client_id=selected_client_id,
         )
+        if isinstance(result, dict):
+            result["duration_ms"] = int((time.perf_counter() - started_at) * 1000)
+        return result
     except Exception as exc:
-        return {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
+        return {"ok": False, "error": f"{exc.__class__.__name__}: {exc}", "duration_ms": int((time.perf_counter() - started_at) * 1000)}
 
 
 def _persist_pipeline_outputs_inner(

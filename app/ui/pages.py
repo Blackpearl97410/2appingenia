@@ -308,6 +308,39 @@ def render_wf4_budget_agent_notice(execution: dict[str, object], *, compact: boo
     )
 
 
+def _format_duration_ms(duration_ms: object) -> str:
+    try:
+        value = int(duration_ms)
+    except (TypeError, ValueError):
+        return "-"
+    if value < 1000:
+        return f"{value} ms"
+    seconds = value / 1000
+    if seconds < 60:
+        return f"{seconds:.1f} s"
+    minutes = int(seconds // 60)
+    remaining_seconds = int(seconds % 60)
+    return f"{minutes} min {remaining_seconds:02d} s"
+
+
+def render_execution_timings(execution_meta: dict[str, object], persistence_result: dict[str, object] | None = None) -> None:
+    wf4_meta = execution_meta.get("wf4", {}) if isinstance(execution_meta.get("wf4", {}), dict) else {}
+    wf4_durations = wf4_meta.get("durations_ms", {}) if isinstance(wf4_meta.get("durations_ms", {}), dict) else {}
+    rows = [
+        {"Etape": "WF2a", "Duree": _format_duration_ms(execution_meta.get("wf2a", {}).get("duration_ms"))},
+        {"Etape": "WF2b", "Duree": _format_duration_ms(execution_meta.get("wf2b", {}).get("duration_ms"))},
+        {"Etape": "WF3", "Duree": _format_duration_ms(execution_meta.get("wf3", {}).get("duration_ms"))},
+        {"Etape": "WF4A", "Duree": _format_duration_ms(wf4_durations.get("WF4A"))},
+        {"Etape": "WF4A sections", "Duree": _format_duration_ms(wf4_durations.get("WF4A_sections"))},
+        {"Etape": "WF4B", "Duree": _format_duration_ms(wf4_durations.get("WF4B"))},
+        {"Etape": "WF4C", "Duree": _format_duration_ms(wf4_durations.get("WF4C"))},
+        {"Etape": "Supabase", "Duree": _format_duration_ms((persistence_result or {}).get("duration_ms"))},
+        {"Etape": "Pipeline total", "Duree": _format_duration_ms(execution_meta.get("duration_ms"))},
+    ]
+    st.markdown("#### Chronometrage")
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
 def render_normalized_text(content: str, filename: str, *, expanded: bool = False, section_title: str = "Source normalisee") -> None:
     with st.expander(section_title, expanded=expanded):
         st.text_area("Contenu normalise", content[:5000], height=260)
@@ -2151,6 +2184,7 @@ def render_upload() -> None:
 
     if active_pipeline_outputs:
         execution_meta = active_pipeline_outputs.get("execution", {})
+        persistence_result = st.session_state.get("pipeline_persistence", {})
         st.success("Derniere execution disponible pour les fichiers actuellement charges.")
         render_metadata({
             "WF2a": execution_meta.get("wf2a", {}).get("engine", "heuristique_locale"),
@@ -2174,13 +2208,14 @@ def render_upload() -> None:
                 "Le livrable affiche peut donc etre plus pauvre que prevu."
             )
             render_wf4_fallback_details(execution_meta)
-        persistence_result = st.session_state.get("pipeline_persistence", {})
+        render_execution_timings(execution_meta, persistence_result)
         if persistence_result:
             if persistence_result.get("ok"):
                 st.caption(
                     f"Supabase : analyse {persistence_result.get('analyse_id')} enregistree, "
                     f"{persistence_result.get('documents_count', 0)} document(s), "
-                    f"{persistence_result.get('criteres_count', 0)} critere(s)."
+                    f"{persistence_result.get('criteres_count', 0)} critere(s), "
+                    f"{_format_duration_ms(persistence_result.get('duration_ms'))}."
                 )
             else:
                 st.warning(f"Persistance Supabase non finalisee : {persistence_result.get('error', 'erreur inconnue')}")
