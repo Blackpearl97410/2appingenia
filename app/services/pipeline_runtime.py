@@ -337,6 +337,36 @@ def _elapsed_ms(start_time: float) -> int:
     return int((time.perf_counter() - start_time) * 1000)
 
 
+def _resolve_step_model_override(provider: str | None, model: str | None, step: str) -> str | None:
+    provider_norm = str(provider or "").strip().lower()
+    model_norm = str(model or "").strip().lower()
+    if provider_norm != "deepseek":
+        return model
+    if model_norm not in {
+        "deepseek-v4-pro-thinking",
+        "deepseek-v4-pro",
+        "deepseek-v4-pro:thinking",
+    }:
+        return model
+    if step in {"WF2A", "WF2B", "WF3", "WF4B", "WF4C", "WF4A_SECTIONS"}:
+        return "deepseek-v4-pro-non-thinking"
+    return model
+
+
+def _should_use_llm_for_step(prefer_llm: bool, provider: str | None, model: str | None, step: str) -> bool:
+    if not prefer_llm:
+        return False
+    provider_norm = str(provider or "").strip().lower()
+    model_norm = str(model or "").strip().lower()
+    if provider_norm == "deepseek" and model_norm in {
+        "deepseek-v4-pro-thinking",
+        "deepseek-v4-pro",
+        "deepseek-v4-pro:thinking",
+    } and step in {"WF2A", "WF2B", "WF3"}:
+        return False
+    return True
+
+
 def _normalize_presentation_payload(payload: dict[str, object], fallback_outputs: dict[str, object]) -> dict[str, object]:
     payload = payload if isinstance(payload, dict) else {}
     fallback_sections = list(
@@ -543,12 +573,25 @@ def _presentation_needs_section_enrichment(presentation_payload: object) -> bool
     return substantive_sections < min(3, len(sections))
 
 
+def _should_run_wf4a_section_enrichment(provider: str | None, presentation_payload: object, wf4a_result: dict[str, object], quota_exhausted: bool) -> bool:
+    provider_norm = str(provider or "").strip().lower()
+    if quota_exhausted:
+        return False
+    if provider_norm == "deepseek":
+        return False
+    if not wf4a_result.get("ok"):
+        return True
+    return _presentation_needs_section_enrichment(presentation_payload)
+
+
 def _should_prioritize_wf4a_over_budget_llm(provider: str, model: str) -> bool:
     provider_norm = str(provider or "").strip().lower()
     model_norm = str(model or "").strip().lower()
-    if provider_norm != "google":
-        return False
-    return "flash" in model_norm
+    if provider_norm == "google":
+        return "flash" in model_norm
+    if provider_norm == "deepseek":
+        return "thinking" in model_norm or model_norm == "deepseek-v4-pro"
+    return False
 
 
 def _build_presentation_from_section_results(
@@ -683,6 +726,17 @@ def _extract_budget_root(payload: dict[str, object]) -> dict[str, object]:
     if isinstance(nested, dict):
         return nested
     return payload
+
+
+def _get_dict_case_insensitive(source: object, *keys: str) -> dict[str, object]:
+    if not isinstance(source, dict):
+        return {}
+    lowered_map = {str(key).strip().lower(): value for key, value in source.items()}
+    for key in keys:
+        match = lowered_map.get(str(key).strip().lower())
+        if isinstance(match, dict):
+            return match
+    return {}
 
 
 def _coerce_string_list(value: object) -> list[str]:
@@ -1037,8 +1091,11 @@ def _normalize_budget_payload(payload: dict[str, object], fallback_structured: d
         charges = _normalize_budget_rows(section_rows)
 
     sections = payload.get("sections", {})
+    if not isinstance(sections, dict):
+        sections = {}
     if not charges and isinstance(sections, dict):
-        charges = _normalize_budget_rows(_flatten_budget_section(sections.get("charges", {}), kind="charge"))
+        charges_section = _get_dict_case_insensitive(sections, "charges", "charge", "depenses")
+        charges = _normalize_budget_rows(_flatten_budget_section(charges_section, kind="charge"))
 
     if not produits:
         section_rows = []
@@ -1060,7 +1117,8 @@ def _normalize_budget_payload(payload: dict[str, object], fallback_structured: d
         produits = _normalize_budget_rows(section_rows)
 
     if not produits and isinstance(sections, dict):
-        produits = _normalize_budget_rows(_flatten_budget_section(sections.get("produits", {}), kind="produit"))
+        produits_section = _get_dict_case_insensitive(sections, "produits", "ressources", "recettes")
+        produits = _normalize_budget_rows(_flatten_budget_section(produits_section, kind="produit"))
 
     if not charges and not produits:
         return fallback_structured
@@ -1077,8 +1135,8 @@ def _normalize_budget_payload(payload: dict[str, object], fallback_structured: d
             "equilibre_budgetaire": "",
         }
     if not totaux and isinstance(sections, dict):
-        charges_section = sections.get("charges", {})
-        produits_section = sections.get("produits", {})
+        charges_section = _get_dict_case_insensitive(sections, "charges", "charge", "depenses")
+        produits_section = _get_dict_case_insensitive(sections, "produits", "ressources", "recettes")
         if isinstance(charges_section, dict) or isinstance(produits_section, dict):
             totaux = {
                 "total_charges": str(charges_section.get("total_charges", "")).strip() if isinstance(charges_section, dict) else "",
@@ -1186,13 +1244,14 @@ def resolve_wf4_outputs(
     wf4c_result: dict[str, object] = {"usage": {}}
 
     modular_base_sections = list(fallback_outputs["livrables"]["presentation_projet"].get("sections", []))
+    wf4a_model_override = _resolve_step_model_override(llm_provider, llm_model, "WF4A")
     wf4a_started_at = time.perf_counter()
     wf4a_result = request_wf4a_llm_payload(
         wf2a_structured,
         wf2b_structured,
         wf3_analysis,
         provider_override=llm_provider,
-        model_override=llm_model,
+        model_override=wf4a_model_override,
     )
     meta["durations_ms"]["WF4A"] = _elapsed_ms(wf4a_started_at)
     if wf4a_result.get("provider"):
@@ -1220,15 +1279,20 @@ def resolve_wf4_outputs(
         wf4a_result.get("error", "")
     )
     should_run_wf4a_sections = (
-        modular_base_sections
-        and not global_wf4a_quota_exhausted
-        and (not wf4a_result.get("ok") or _presentation_needs_section_enrichment(presentation_payload))
+        bool(modular_base_sections)
+        and _should_run_wf4a_section_enrichment(
+            llm_provider or active_provider,
+            presentation_payload,
+            wf4a_result,
+            global_wf4a_quota_exhausted,
+        )
     )
     if should_run_wf4a_sections:
         wf4a_sections_started_at = time.perf_counter()
         effective_provider = str(llm_provider or active_provider or "").strip().lower()
         effective_model = str(llm_model or active_model or "").strip().lower()
         section_attempt_limit = _presentation_section_attempt_limit(effective_provider, effective_model)
+        wf4a_sections_model_override = _resolve_step_model_override(llm_provider, llm_model, "WF4A_SECTIONS")
         candidate_sections = []
         for index, section in enumerate(modular_base_sections):
             if not isinstance(section, dict):
@@ -1260,7 +1324,7 @@ def resolve_wf4_outputs(
                 wf3_analysis,
                 section_request,
                 provider_override=llm_provider,
-                model_override=llm_model,
+                model_override=wf4a_sections_model_override,
             )
             section_results.append(section_result)
             result_by_index[index] = section_result
@@ -1320,18 +1384,19 @@ def resolve_wf4_outputs(
     prioritize_wf4a = _should_prioritize_wf4a_over_budget_llm(effective_provider, effective_model)
 
     if prioritize_wf4a and not wf4b_has_dedicated_agent():
-        meta["parts"]["budget_projet"] = "local:priorite_wf4a_google"
-        meta["parts"]["budget_structure"] = "local:priorite_wf4a_google"
+        meta["parts"]["budget_projet"] = "local:priorite_presentation_llm"
+        meta["parts"]["budget_structure"] = "local:priorite_presentation_llm"
         meta["durations_ms"]["WF4B"] = 0
         meta["durations_ms"]["WF4C"] = 0
     else:
+        wf4b_model_override = _resolve_step_model_override(llm_provider, llm_model, "WF4B")
         wf4b_started_at = time.perf_counter()
         wf4b_result = request_wf4b_llm_payload(
             wf2a_structured,
             wf2b_structured,
             wf3_analysis,
             provider_override=llm_provider,
-            model_override=llm_model,
+            model_override=wf4b_model_override,
         )
         meta["durations_ms"]["WF4B"] = _elapsed_ms(wf4b_started_at)
         if not active_provider and wf4b_result.get("provider"):
@@ -1355,16 +1420,17 @@ def resolve_wf4_outputs(
             meta["parts"]["budget_projet"] = f"fallback:{wf4b_result.get('error', 'llm_error')}"
 
         if prioritize_wf4a:
-            meta["parts"]["budget_structure"] = "local:priorite_wf4a_google"
+            meta["parts"]["budget_structure"] = "local:priorite_presentation_llm"
             meta["durations_ms"]["WF4C"] = 0
         else:
+            wf4c_model_override = _resolve_step_model_override(llm_provider, llm_model, "WF4C")
             wf4c_started_at = time.perf_counter()
             wf4c_result = request_wf4c_llm_payload(
                 wf2a_structured,
                 wf2b_structured,
                 wf3_analysis,
                 provider_override=llm_provider,
-                model_override=llm_model,
+                model_override=wf4c_model_override,
             )
             meta["durations_ms"]["WF4C"] = _elapsed_ms(wf4c_started_at)
             if not active_provider and wf4c_result.get("provider"):
@@ -1483,18 +1549,22 @@ def resolve_pipeline_outputs(
     llm_model: str | None = None,
 ) -> dict[str, object]:
     started_at = time.perf_counter()
+    wf2a_model = _resolve_step_model_override(llm_provider, llm_model, "WF2A")
+    wf2b_model = _resolve_step_model_override(llm_provider, llm_model, "WF2B")
+    wf3_model = _resolve_step_model_override(llm_provider, llm_model, "WF3")
+    wf4_model = _resolve_step_model_override(llm_provider, llm_model, "WF4A")
     wf2a_structured, wf2a_meta = resolve_wf2a_structured(
         dossier_files,
-        prefer_llm=prefer_llm,
+        prefer_llm=_should_use_llm_for_step(prefer_llm, llm_provider, llm_model, "WF2A"),
         llm_provider=llm_provider,
-        llm_model=llm_model,
+        llm_model=wf2a_model,
     )
     wf2b_structured, wf2b_meta = resolve_wf2b_structured(
         client_files,
         project_files,
-        prefer_llm=prefer_llm,
+        prefer_llm=_should_use_llm_for_step(prefer_llm, llm_provider, llm_model, "WF2B"),
         llm_provider=llm_provider,
-        llm_model=llm_model,
+        llm_model=wf2b_model,
     )
 
     completed_wf2a, completed_wf2b = merge_completed_bridge_into_wf2(
@@ -1507,17 +1577,17 @@ def resolve_pipeline_outputs(
         completed_wf2a,
         completed_wf2b,
         global_context_bridge=global_context_bridge,
-        prefer_llm=prefer_llm,
+        prefer_llm=_should_use_llm_for_step(prefer_llm, llm_provider, llm_model, "WF3"),
         llm_provider=llm_provider,
-        llm_model=llm_model,
+        llm_model=wf3_model,
     )
     wf4_outputs, wf4_meta = resolve_wf4_outputs(
         completed_wf2a,
         completed_wf2b,
         wf3_analysis,
-        prefer_llm=prefer_llm,
+        prefer_llm=_should_use_llm_for_step(prefer_llm, llm_provider, llm_model, "WF4A"),
         llm_provider=llm_provider,
-        llm_model=llm_model,
+        llm_model=wf4_model,
     )
 
     return {

@@ -200,7 +200,12 @@ def create_llm_client(provider_override: str | None = None, model_override: str 
             from openai import OpenAI
         except Exception:
             return None
-        return OpenAI(api_key=settings.deepseek_api_key, base_url="https://api.deepseek.com")
+        return OpenAI(
+            api_key=settings.deepseek_api_key,
+            base_url="https://api.deepseek.com",
+            timeout=35.0,
+            max_retries=0,
+        )
 
     if settings.provider == "mistral":
         try:
@@ -432,6 +437,7 @@ def call_deepseek_message(
             {"role": "user", "content": user_prompt},
         ],
         "max_tokens": request_max_tokens,
+        "timeout": 35.0,
         "extra_body": {"thinking": {"type": thinking_type}},
     }
     if thinking_type == "enabled":

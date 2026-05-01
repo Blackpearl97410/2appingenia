@@ -259,8 +259,8 @@ def _format_wf4_part_status(raw_status: object) -> str:
         return "statut inconnu"
     if status == "llm":
         return "LLM OK"
-    if status.startswith("local:priorite_wf4a_google"):
-        return "Local guide (priorite WF4A avec Google)"
+    if status.startswith("local:priorite_presentation_llm"):
+        return "Local guide (priorite presentation LLM)"
     if status.startswith("llm_modulaire:"):
         return f"LLM modulaire par sections ({status.split(':', 1)[1]})"
     if status.startswith("llm_sections_recovery:"):
@@ -2083,6 +2083,8 @@ def render_upload() -> None:
             st.caption(f"Execution LLM ciblee : `{selected_provider}` / `{selected_model or default_model}`")
             if "deepseek" in configured_providers and selected_provider == "deepseek":
                 st.caption("Defaut recommande actif : `deepseek-v4-pro-thinking` pour les tests de qualite.")
+                if (selected_model or default_model) == "deepseek-v4-pro-thinking":
+                    st.caption("Mode hybride actif : `WF4A` utilise le thinking, tandis que `WF2A/WF2B/WF3` restent en heuristique locale pour limiter la latence.")
             if "google" in configured_providers and selected_provider == "google":
                 st.caption("Defaut recommande actif : `google` pour fiabiliser `WF4A`.")
         else:
