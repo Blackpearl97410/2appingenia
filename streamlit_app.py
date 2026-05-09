@@ -31,30 +31,29 @@ def main() -> None:
     page = st.sidebar.radio(
         "Navigation",
         [
+            "Analyser un dossier",
             "Accueil",
-            "Projet",
             "Donnees demo",
             "Base documentaire",
-            "Supabase",
-            "LLM",
-            "Upload",
+            "Configuration",
+            "Projet",
         ],
     )
 
-    if page == "Accueil":
+    if page == "Analyser un dossier":
+        render_upload()
+    elif page == "Accueil":
         render_home()
-    elif page == "Projet":
-        render_project()
     elif page == "Donnees demo":
         render_demo_data()
     elif page == "Base documentaire":
         render_document_catalog_page()
-    elif page == "Supabase":
+    elif page == "Configuration":
         render_supabase_page()
-    elif page == "LLM":
+        st.divider()
         render_llm_page()
     else:
-        render_upload()
+        render_project()
 
 
 if __name__ == "__main__":

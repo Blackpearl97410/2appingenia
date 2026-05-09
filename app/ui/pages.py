@@ -457,7 +457,7 @@ def render_home() -> None:
     base_doc_count = len(catalog) if not catalog.empty else 0
 
     st.title("AAP Ingenia")
-    st.caption("Back-office local de pre-analyse documentaire aligne sur les workflows Subly")
+    st.caption("Analyse vos dossiers de financement et genere les livrables de candidature")
     st.markdown(
         """
         <section class="app-hero" aria-label="Presentation de l'application">
@@ -472,8 +472,8 @@ def render_home() -> None:
     add_vertical_space(1)
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("Statut", "WF1 a WF4 locaux")
-    col2.metric("Mode", "Prototype metier")
+    col1.metric("Statut", "Analyse complete")
+    col2.metric("Mode", "Local")
     col3.metric("Base documentaire", f"{base_doc_count} docs")
 
     add_vertical_space(1)
@@ -492,9 +492,9 @@ def render_home() -> None:
         Cette version sert maintenant a valider un vrai flux local :
 
         - ingestion dossier / client / projet ;
-        - extraction structuree `WF2a` et `WF2b` ;
-        - matching critere par critere `WF3` ;
-        - sorties locales `WF4` : rapport, pre-remplissage et suggestions ;
+        - extraction des criteres du dossier et du profil structure ;
+        - analyse d'eligibilite critere par critere ;
+        - generation des livrables : rapport, pre-remplissage et suggestions ;
         - preparation de la base documentaire et de Supabase.
         """
     )
@@ -772,10 +772,10 @@ def render_wf2a_dossier_section(
     dossier_template_override: dict[str, object] | None = None,
     execution_meta: dict[str, object] | None = None,
 ) -> None:
-    st.subheader("WF2a local - Extraction criteres dossier")
+    st.subheader("Criteres detectes dans le dossier")
 
     if not dossier_files:
-        st.info("Aucun document dossier charge pour lancer l'extraction WF2a locale.")
+        st.info("Charge un document dossier (appel a projets, cahier des charges) pour detecter les criteres.")
         return
 
     wf2a = wf2a_structured or extract_wf2a_structured(dossier_files)
@@ -844,7 +844,7 @@ def render_wf2b_section(
     wf2b_structured: dict[str, object] | None = None,
     execution_meta: dict[str, object] | None = None,
 ) -> None:
-    st.subheader("WF2b local - Profil client et donnees projet")
+    st.subheader("Profil de la structure et donnees projet")
     wf2b = wf2b_structured or extract_wf2b_structured(client_files, project_files)
 
     if execution_meta:
@@ -858,18 +858,18 @@ def render_wf2b_section(
     with col1:
         st.markdown("### Profil client")
         if not client_files:
-            st.info("Aucun document client charge pour l'extraction WF2b locale.")
+            st.info("Charge un document client (statuts, presentation de structure) pour extraire le profil.")
         else:
             render_metadata(summarize_wf2b_client_profile(wf2b))
 
     with col2:
         st.markdown("### Donnees projet")
         if not project_files:
-            st.info("Aucun document projet charge pour l'extraction WF2b locale.")
+            st.info("Charge un document projet (note d'intention, budget) pour extraire les donnees du projet.")
         else:
             render_metadata(summarize_wf2b_project_data(wf2b))
 
-    with st.expander("Voir la structure WF2b preparee pour un futur LLM", expanded=False):
+    with st.expander("Voir la structure extraite (detail technique)", expanded=False):
         profil_client = wf2b.get("profil_client", {})
         donnees_projet = wf2b.get("donnees_projet", {})
         st.write("**Profil client structure**")
@@ -927,7 +927,7 @@ def render_manual_completion_widget(
     project_files,
 ) -> dict[str, str]:
     st.markdown("### Completion manuelle des donnees manquantes")
-    st.caption("Le widget s'adapte aux blocs charges et ne propose que les informations encore manquantes ou trop faibles pour le WF3 local.")
+    st.caption("Completer manuellement les informations manquantes ameliore la qualite de l'analyse d'eligibilite.")
 
     overrides: dict[str, str] = {}
     sections = [
@@ -977,7 +977,7 @@ def render_bridge_section(
     client_files,
     project_files,
 ) -> dict[str, str]:
-    st.subheader("Pont local - Donnees comparables WF2a/WF2b")
+    st.subheader("Correspondance dossier / structure porteuse")
     render_metadata(bridge)
     st.divider()
     completed_bridge = render_manual_completion_widget(bridge, dossier_files, client_files, project_files)
@@ -997,10 +997,10 @@ def render_wf3_section(
     global_bridge: dict[str, str] | None = None,
     pipeline_outputs: dict[str, object] | None = None,
 ) -> None:
-    st.subheader("WF3 local - Matching dossier / client / projet")
+    st.subheader("Analyse d'eligibilite")
 
     if not dossier_files or not client_files or not project_files:
-        st.info("Le WF3 local demande des documents dans les 3 blocs : dossier, client et projet.")
+        st.info("Charge des documents dans les 3 blocs (dossier, structure porteuse, projet) pour lancer l'analyse d'eligibilite.")
         return
 
     wf2a_structured = pipeline_outputs.get("wf2a") if pipeline_outputs else extract_wf2a_structured(dossier_files)
@@ -1095,7 +1095,7 @@ def render_wf3_section(
 
     with st.expander("Voir le matching critere par critere", expanded=False):
         if not results:
-            st.info("Aucun critere exploitable n'a ete produit par WF2a.")
+            st.info("Aucun critere detecte dans le dossier. Verifie que le document charge est bien un appel a projets ou un cahier des charges.")
         else:
             rows = []
             for result in results:
@@ -1135,10 +1135,10 @@ def render_wf4_section(
     global_bridge: dict[str, str] | None = None,
     pipeline_outputs: dict[str, object] | None = None,
 ) -> None:
-    st.subheader("WF4 local - Livrables de candidature")
+    st.subheader("Livrables de candidature")
 
     if not dossier_files or not client_files or not project_files:
-        st.info("Le WF4 local demande un dossier, un client et un projet pour generer des sorties utiles.")
+        st.info("Charge les 3 types de documents (dossier, structure porteuse, projet) pour generer les livrables de candidature.")
         return
 
     if pipeline_outputs:
@@ -2018,7 +2018,7 @@ def render_upload() -> None:
 
     st.divider()
     diagnostic_tab, extraction_tab, bridge_tab, wf4_tab = st.tabs(
-        ["Diagnostic prioritaire", "Extractions detaillees", "Ponts et completions", "WF4 sorties"]
+        ["Diagnostic", "Details extraits", "Completer manuellement", "Livrables"]
     )
 
     with bridge_tab:
@@ -2054,7 +2054,7 @@ def render_upload() -> None:
     )
     col_exec_1, col_exec_2 = st.columns(2)
     prefer_llm = col_exec_1.checkbox(
-        "Preferer un provider LLM pour WF2/WF3",
+        "Activer l'analyse intelligente (IA)",
         value=use_llm_default,
         help="Utilise le provider LLM configure si une cle est presente, sinon repasse automatiquement sur l'heuristique locale.",
     )
@@ -2188,10 +2188,10 @@ def render_upload() -> None:
                         else:
                             st.error("Erreur lors de la creation du client dans Supabase.")
 
-    if st.button("Executer le pipeline", key="execute_pipeline_button", type="primary"):
+    if st.button("🚀 Lancer l'analyse", key="execute_pipeline_button", type="primary"):
         st.session_state["pipeline_last_error"] = ""
         try:
-            with st.spinner("Execution du pipeline en cours..."):
+            with st.spinner("Analyse en cours... (~30s selon les documents)"):
                 pipeline_outputs = resolve_pipeline_outputs(
                     block_files_map["Documents dossier"],
                     block_files_map["Documents client"],
@@ -2265,7 +2265,7 @@ def render_upload() -> None:
         st.divider()
         render_final_result_summary(active_pipeline_outputs)
     else:
-        st.info("Aucune execution pilotee en memoire pour les fichiers actuels. Les vues ci-dessous utilisent les sorties locales par defaut.")
+        st.info("Lance l'analyse avec le bouton ci-dessus pour generer les livrables. Les vues ci-dessous affichent une pre-analyse rapide en attendant.")
 
     with diagnostic_tab:
         st.markdown("### Lecture prioritaire")
@@ -2282,14 +2282,14 @@ def render_upload() -> None:
         )
 
     with extraction_tab:
-        with st.expander("WF2a local - Criteres dossier", expanded=True):
+        with st.expander("Criteres detectes dans le dossier", expanded=True):
             render_wf2a_dossier_section(
                 block_files_map["Documents dossier"],
                 wf2a_structured=active_pipeline_outputs.get("wf2a") if active_pipeline_outputs else None,
                 dossier_template_override=dossier_template_override,
                 execution_meta=active_pipeline_outputs.get("execution", {}).get("wf2a") if active_pipeline_outputs else None,
             )
-        with st.expander("WF2b local - Profil client et donnees projet", expanded=True):
+        with st.expander("Profil de la structure et donnees projet", expanded=True):
             render_wf2b_section(
                 block_files_map["Documents client"],
                 block_files_map["Documents projet"],

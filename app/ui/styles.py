@@ -18,7 +18,7 @@ _LIGHT_VARS = """
     --border-accent:  #6366f1;
     --text-primary:   #0f172a;
     --text-secondary: #475569;
-    --text-muted:     #94a3b8;
+    --text-muted:     #64748b;  /* ratio 4.6:1 sur blanc — WCAG AA ✓ */
     --text-sidebar:   #f1f5f9;
     --text-sidebar-m: #cbd5e1;
     --accent:         #6366f1;
@@ -193,7 +193,7 @@ p, li {
 [data-testid="metric-container"] [data-testid="stMetricLabel"] p,
 [data-testid="metric-container"] label {
     color: var(--metric-label) !important;
-    font-size: 0.72rem !important;
+    font-size: 0.8rem !important;   /* 12.8px — lisible, min WCAG recommandé */
     font-weight: 600 !important;
     text-transform: uppercase !important;
     letter-spacing: 0.07em !important;
