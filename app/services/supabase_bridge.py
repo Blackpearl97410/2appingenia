@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import unicodedata
 
-SUPABASE_CONNECT_TIMEOUT = 8  # secondes — échoue vite si le projet est en pause
+SUPABASE_CONNECT_TIMEOUT = 4  # secondes — échoue vite si le projet est en pause
 
 from app.services.env_loader import get_env_value, load_project_env
 

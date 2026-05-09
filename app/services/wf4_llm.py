@@ -424,67 +424,110 @@ Retourne uniquement un JSON valide :
 """.strip()
 
 
+def _compress_wf3_for_wf4(wf3_analysis: dict[str, object]) -> dict[str, object]:
+    """Compresse WF3 pour WF4 : garde uniquement les champs utiles à la rédaction.
+    Supprime source_texte et donnee_utilisee (verbeux, déjà dans WF2a/WF2b).
+    Réduit typiquement le payload de 30-50%.
+    """
+    resultats = []
+    for item in wf3_analysis.get("resultats_criteres", []):
+        if not isinstance(item, dict):
+            continue
+        resultats.append({
+            "critere_id": str(item.get("critere_id", "")).strip(),
+            "libelle": str(item.get("libelle", "")).strip(),
+            "statut": str(item.get("statut", "")).strip(),
+            "score": item.get("score", 0),
+            "justification": str(item.get("justification", "")).strip(),
+            "action_requise": str(item.get("action_requise", "")).strip(),
+            "ecart": str(item.get("ecart", "")).strip(),
+            "bloc_cible": str(item.get("bloc_cible", "")).strip(),
+            "niveau_confiance": str(item.get("niveau_confiance", "")).strip(),
+        })
+    return {
+        "score_global": wf3_analysis.get("score_global", 0),
+        "statut_eligibilite": wf3_analysis.get("statut_eligibilite", ""),
+        "niveau_confiance": wf3_analysis.get("niveau_confiance", ""),
+        "resume_executif": wf3_analysis.get("resume_executif", ""),
+        "sous_scores": wf3_analysis.get("sous_scores", {}),
+        "resultats_criteres": resultats,
+    }
+
+
+def _compress_wf2a_for_wf4(wf2a_structured: dict[str, object]) -> dict[str, object]:
+    """Compresse WF2a pour WF4 : supprime source_texte (long) des critères."""
+    criteres = [
+        {
+            "libelle": str(item.get("libelle", "")).strip(),
+            "detail": str(item.get("detail", "")).strip()[:300],  # tronque les details trop longs
+            "categorie": str(item.get("categorie", "")).strip(),
+            "domaine": str(item.get("domaine", "")).strip(),
+            "est_critere_eliminatoire": bool(item.get("est_critere_eliminatoire", False)),
+        }
+        for item in wf2a_structured.get("criteres", [])
+        if isinstance(item, dict)
+    ]
+    metadata = wf2a_structured.get("metadata", {})
+    trame = {}
+    if isinstance(metadata, dict):
+        raw_trame = metadata.get("trame_livrable_attendue", {})
+        if isinstance(raw_trame, dict) and (raw_trame.get("requise") or raw_trame.get("detectee")):
+            trame = {
+                "requise": bool(raw_trame.get("requise", False)),
+                "confirmee": bool(raw_trame.get("confirmee", False)),
+                "titre_trame": str(raw_trame.get("titre_trame", "")).strip(),
+                "rubriques": [str(r).strip() for r in raw_trame.get("rubriques", []) if str(r).strip()],
+            }
+    return {
+        "metadata": {
+            "type_dossier_detecte": str(metadata.get("type_dossier_detecte", "")) if isinstance(metadata, dict) else "",
+            "financeur_detecte": str(metadata.get("financeur_detecte", "")) if isinstance(metadata, dict) else "",
+            "montant_max_detecte": str(metadata.get("montant_max_detecte", "")) if isinstance(metadata, dict) else "",
+            "date_limite_detectee": str(metadata.get("date_limite_detectee", "")) if isinstance(metadata, dict) else "",
+            "rubriques_attendues": list(metadata.get("rubriques_attendues", [])) if isinstance(metadata, dict) else [],
+            "pieces_attendues": list(metadata.get("pieces_attendues", [])) if isinstance(metadata, dict) else [],
+            "attentes_redactionnelles": list(metadata.get("attentes_redactionnelles", [])) if isinstance(metadata, dict) else [],
+            "trame_livrable_attendue": trame,
+        },
+        "criteres": criteres,
+    }
+
+
 def _build_wf4_payload_dict(
     wf2a_structured: dict[str, object],
     wf2b_structured: dict[str, object],
     wf3_analysis: dict[str, object],
 ) -> dict[str, object]:
-    criteres = [
-        {
-            "libelle": str(item.get("libelle", "")).strip(),
-            "detail": str(item.get("detail", "")).strip(),
-            "source_document": str(item.get("source_document", "")).strip(),
-            "source_texte": str(item.get("source_texte", "")).strip(),
-            "categorie": str(item.get("categorie", "")).strip(),
-            "domaine": str(item.get("domaine", "")).strip(),
-        }
-        for item in wf2a_structured.get("criteres", [])
-        if isinstance(item, dict)
-    ]
+    wf2a_compressed = _compress_wf2a_for_wf4(wf2a_structured)
+    criteres = wf2a_compressed["criteres"]
+
     structure_sources = _collect_field_sources(wf2b_structured.get("profil_client", {}))
     projet_sources = _collect_field_sources(wf2b_structured.get("donnees_projet", {}))
     critical_actions = _dedup_strings(
         [
             str(item.get("action_requise", "")).strip()
             for item in wf3_analysis.get("resultats_criteres", [])
-            if isinstance(item, dict)
+            if isinstance(item, dict) and str(item.get("action_requise", "")).strip()
         ]
     )
     source_documents = _dedup_strings(
-        [entry["source_document"] for entry in criteres + structure_sources + projet_sources if entry.get("source_document")]
+        [
+            str(item.get("source_document", "")).strip()
+            for item in wf2a_structured.get("criteres", [])
+            if isinstance(item, dict) and str(item.get("source_document", "")).strip()
+        ] + [e["source_document"] for e in structure_sources + projet_sources if e.get("source_document")]
     )
-    dossier_template = {}
-    metadata = wf2a_structured.get("metadata", {})
-    if isinstance(metadata, dict) and isinstance(metadata.get("trame_livrable_attendue", {}), dict):
-        raw_template = metadata.get("trame_livrable_attendue", {})
-        requise = bool(raw_template.get("requise", False))
-        detectee = bool(raw_template.get("detectee", False))
-        confirmee = bool(raw_template.get("confirmee", False))
-        if requise or detectee or confirmee:
-            dossier_template = {
-                "requise": requise,
-                "detectee": detectee,
-                "confirmee": confirmee,
-                "titre_trame": str(raw_template.get("titre_trame", "")).strip(),
-                "rubriques": [str(item).strip() for item in raw_template.get("rubriques", []) if str(item).strip()],
-                "ordre_impose": bool(raw_template.get("ordre_impose", False)),
-                "contraintes": [str(item).strip() for item in raw_template.get("contraintes", []) if str(item).strip()],
-                "source_document": str(raw_template.get("source_document", "")).strip(),
-                "source_texte": str(raw_template.get("source_texte", "")).strip(),
-                "niveau_confiance": str(raw_template.get("niveau_confiance", "")).strip(),
-            }
 
     return {
-        "wf2a": wf2a_structured,
+        "wf2a": wf2a_compressed,
         "wf2b": wf2b_structured,
-        "wf3": wf3_analysis,
+        "wf3": _compress_wf3_for_wf4(wf3_analysis),
         "matiere_source": {
             "documents_sources": source_documents,
             "criteres_explicites": criteres,
             "structure_porteuse": structure_sources,
             "projet": projet_sources,
             "actions_critiques": critical_actions,
-            "trame_livrable_attendue": dossier_template,
         },
     }
 
@@ -729,7 +772,9 @@ def request_wf4a_llm_payload(
     parsed_payload, parse_error = parse_json_response(str(llm_result.get("text", "")))
     repair_usage: dict[str, object] = {}
     repair_model = ""
-    if parse_error is not None and not is_google_quota_exhausted_error(parse_error):
+    # JSON truncation (Unterminated string) cannot be fixed by repair — skip it to save 30-60s
+    is_truncated = parse_error is not None and "Unterminated" in str(parse_error)
+    if parse_error is not None and not is_truncated and not is_google_quota_exhausted_error(parse_error):
         repair_result = repair_json_response_with_llm(
             str(llm_result.get("text", "")),
             provider_override=wf4a_provider_override,
@@ -746,7 +791,7 @@ def request_wf4a_llm_payload(
         parse_error is None
         and isinstance(parsed_payload, dict)
         and not _payload_has_substantive_presentation_content(parsed_payload)
-    ):
+    ) or is_truncated:
         retry_prompt = (
             _build_wf4_payload(wf2a_structured, wf2b_structured, wf3_analysis)
             + "\n\nConsigne renforcee : la premiere version etait trop succincte. "
@@ -762,7 +807,8 @@ def request_wf4a_llm_payload(
         )
         if retry_result.get("ok"):
             retry_payload, retry_error = parse_json_response(str(retry_result.get("text", "")))
-            if retry_error is not None:
+            retry_is_truncated = retry_error is not None and "Unterminated" in str(retry_error)
+            if retry_error is not None and not retry_is_truncated:
                 repair_result = repair_json_response_with_llm(
                     str(retry_result.get("text", "")),
                     provider_override=wf4a_provider_override,
@@ -775,6 +821,7 @@ def request_wf4a_llm_payload(
                 parsed_payload = retry_payload
                 llm_result = retry_result
                 parse_error = None
+                is_truncated = False
 
     return {
         "ok": parse_error is None and parsed_payload is not None,

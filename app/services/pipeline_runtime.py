@@ -1012,11 +1012,19 @@ def _merge_budget_rows(
 
 def _row_richness_score(row: dict[str, object]) -> int:
     score = 0
-    if str(row.get("poste", "")).strip():
+    poste = str(row.get("poste", "")).strip()
+    comment = str(row.get("commentaire", "")).strip()
+    if poste:
+        score += 1
+    if len(poste) >= 28:
         score += 1
     if str(row.get("section", "")).strip() or str(row.get("sous_section", "")).strip():
         score += 1
-    if str(row.get("commentaire", "")).strip():
+    if comment:
+        score += 1
+    if len(comment) >= 60:
+        score += 2
+    if "Quantite=" in comment or "Cout unitaire=" in comment:
         score += 1
     if str(row.get("source", "")).strip():
         score += 1
