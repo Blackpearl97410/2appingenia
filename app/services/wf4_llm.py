@@ -64,6 +64,21 @@ def is_google_quota_exhausted_error(error: object) -> bool:
     )
 
 
+def is_google_access_error(error: object) -> bool:
+    """Détecte les erreurs d'accès Google non-récupérables : 403, PERMISSION_DENIED, auth."""
+    text = str(error or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "permission_denied" in text
+        or "403" in text
+        or "your project has been denied" in text
+        or "clienterror: 403" in text
+        or "unauthorized" in text
+        or "api_key_invalid" in text
+    )
+
+
 def _presentation_section_min_length(section_type: str) -> int:
     major_sections = {"structure", "contexte", "publics", "methodologie", "moyens", "budget"}
     if section_type in major_sections:
@@ -755,6 +770,30 @@ def _resolve_wf4a_overrides(provider_override: str | None) -> tuple[str | None, 
     return None, None
 
 
+def _resolve_wf4a_fallback_overrides(failed_provider: str | None) -> tuple[str | None, str | None]:
+    """Provider de secours si le premier choix échoue (403, auth error, etc.).
+
+    Si Google a échoué → tente DeepSeek non-thinking.
+    Si DeepSeek a échoué → tente Google ou Mistral.
+    """
+    if failed_provider == "google":
+        deepseek_settings = load_llm_settings(provider_override="deepseek")
+        if deepseek_settings.is_configured:
+            return "deepseek", "deepseek-v4-pro-non-thinking"
+        mistral_settings = load_llm_settings(provider_override="mistral")
+        if mistral_settings.is_configured:
+            return "mistral", None
+        return None, None
+
+    if failed_provider == "deepseek":
+        google_settings = load_llm_settings(provider_override="google")
+        if google_settings.is_configured:
+            return "google", None
+        return None, None
+
+    return None, None
+
+
 def wf4b_has_dedicated_agent() -> bool:
     mistral_settings = load_llm_settings(provider_override="mistral")
     return bool(mistral_settings.mistral_api_key and mistral_settings.mistral_budget_project_agent_id.strip())
@@ -770,13 +809,30 @@ def request_wf4a_llm_payload(
     wf4a_provider_override, wf4a_model_override = _resolve_wf4a_overrides(provider_override)
     # model_override explicite prime sur la résolution automatique non-thinking
     effective_model_override = model_override or wf4a_model_override
+    wf4_payload_text = _build_wf4_payload(wf2a_structured, wf2b_structured, wf3_analysis)
     llm_result = call_llm_message(
         WF4A_SYSTEM_PROMPT,
-        _build_wf4_payload(wf2a_structured, wf2b_structured, wf3_analysis),
+        wf4_payload_text,
         max_tokens=8500,
         provider_override=wf4a_provider_override,
         model_override=effective_model_override,
     )
+    # Cascade provider : si 403/auth sur Google → retry sur DeepSeek automatiquement
+    if not llm_result.get("ok"):
+        first_error = llm_result.get("error", "")
+        if is_google_access_error(first_error) or is_google_quota_exhausted_error(first_error):
+            fallback_prov, fallback_model = _resolve_wf4a_fallback_overrides(llm_result.get("provider", ""))
+            if fallback_prov:
+                llm_result = call_llm_message(
+                    WF4A_SYSTEM_PROMPT,
+                    wf4_payload_text,
+                    max_tokens=8500,
+                    provider_override=fallback_prov,
+                    model_override=fallback_model,
+                )
+                if llm_result.get("ok"):
+                    wf4a_provider_override = fallback_prov
+                    effective_model_override = fallback_model
     if not llm_result.get("ok"):
         return {
             "ok": False,
@@ -980,14 +1036,31 @@ def request_wf4a_section_payload(
     effective_model_override = model_override or wf4a_model_override
     payload = _build_wf4_payload_dict(wf2a_structured, wf2b_structured, wf3_analysis)
     payload["section_cible"] = section_payload
+    section_payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
 
     llm_result = call_llm_message(
         WF4A_SECTION_SYSTEM_PROMPT,
-        json.dumps(payload, ensure_ascii=False, indent=2),
+        section_payload_text,
         max_tokens=3200,
         provider_override=wf4a_provider_override,
         model_override=effective_model_override,
     )
+    # Cascade : 403/quota Google → retry DeepSeek non-thinking
+    if not llm_result.get("ok"):
+        first_error = llm_result.get("error", "")
+        if is_google_access_error(first_error) or is_google_quota_exhausted_error(first_error):
+            fallback_prov, fallback_model = _resolve_wf4a_fallback_overrides(llm_result.get("provider", ""))
+            if fallback_prov:
+                llm_result = call_llm_message(
+                    WF4A_SECTION_SYSTEM_PROMPT,
+                    section_payload_text,
+                    max_tokens=3200,
+                    provider_override=fallback_prov,
+                    model_override=fallback_model,
+                )
+                if llm_result.get("ok"):
+                    wf4a_provider_override = fallback_prov
+                    effective_model_override = fallback_model
     if not llm_result.get("ok"):
         return {
             "ok": False,
