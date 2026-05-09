@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import lru_cache
 
 from app.services.env_loader import get_env_value, load_project_env
 
@@ -183,43 +184,55 @@ def load_llm_settings(provider_override: str | None = None, model_override: str 
     )
 
 
-def create_llm_client(provider_override: str | None = None, model_override: str | None = None):
-    settings = load_llm_settings(provider_override=provider_override, model_override=model_override)
-    if not settings.is_configured:
-        return None
-
-    if settings.provider == "google":
+@lru_cache(maxsize=8)
+def _get_cached_client(provider: str, api_key: str, deepseek_base_url: str = ""):
+    """Crée et met en cache un client LLM par (provider, api_key).
+    lru_cache évite de recréer le client à chaque appel — même bénéfice que
+    st.cache_resource mais sans dépendance à Streamlit dans la couche services.
+    """
+    if provider == "google":
         try:
             from google import genai
         except Exception:
             return None
-        return genai.Client(api_key=settings.google_api_key)
+        return genai.Client(api_key=api_key)
 
-    if settings.provider == "deepseek":
+    if provider == "deepseek":
         try:
             from openai import OpenAI
         except Exception:
             return None
         return OpenAI(
-            api_key=settings.deepseek_api_key,
-            base_url="https://api.deepseek.com",
+            api_key=api_key,
+            base_url=deepseek_base_url or "https://api.deepseek.com",
             timeout=35.0,
             max_retries=0,
         )
 
-    if settings.provider == "mistral":
+    if provider == "mistral":
         try:
             from mistralai import Mistral
         except Exception:
             return None
-        return Mistral(api_key=settings.mistral_api_key)
+        return Mistral(api_key=api_key)
 
+    # anthropic (défaut)
     try:
         import anthropic
     except Exception:
         return None
+    return anthropic.Anthropic(api_key=api_key)
 
-    return anthropic.Anthropic(api_key=settings.anthropic_api_key)
+
+def create_llm_client(provider_override: str | None = None, model_override: str | None = None):
+    settings = load_llm_settings(provider_override=provider_override, model_override=model_override)
+    if not settings.is_configured:
+        return None
+    return _get_cached_client(
+        settings.provider,
+        settings.active_api_key,
+        "https://api.deepseek.com" if settings.provider == "deepseek" else "",
+    )
 
 
 def describe_llm_readiness() -> dict[str, str]:
@@ -303,11 +316,23 @@ def call_anthropic_message(
             "raw": message,
         }
     except Exception as exc:
+        # Typage précis des erreurs Anthropic SDK
+        error_code = f"{exc.__class__.__name__}: {exc}"
+        try:
+            from anthropic import AuthenticationError, RateLimitError, APIStatusError
+            if isinstance(exc, AuthenticationError):
+                error_code = "anthropic_cle_invalide"
+            elif isinstance(exc, RateLimitError):
+                error_code = "anthropic_rate_limit"
+            elif isinstance(exc, APIStatusError):
+                error_code = f"anthropic_api_{exc.status_code}"
+        except ImportError:
+            pass
         return {
             "ok": False,
             "provider": settings.provider,
             "model": settings.active_model,
-            "error": f"{exc.__class__.__name__}: {exc}",
+            "error": error_code,
             "text": "",
             "usage": {},
         }
@@ -530,11 +555,25 @@ def call_mistral_message(
             "raw": response,
         }
     except Exception as exc:
+        # Typage précis des erreurs Mistral SDK
+        error_code = f"{exc.__class__.__name__}: {exc}"
+        try:
+            from mistralai.models import SDKError
+            if isinstance(exc, SDKError):
+                status = getattr(exc, "status_code", None)
+                if status == 401:
+                    error_code = "mistral_cle_invalide"
+                elif status == 429:
+                    error_code = "mistral_rate_limit"
+                else:
+                    error_code = f"mistral_api_{status or 'erreur'}"
+        except ImportError:
+            pass
         return {
             "ok": False,
             "provider": settings.provider,
             "model": settings.active_model,
-            "error": f"{exc.__class__.__name__}: {exc}",
+            "error": error_code,
             "text": "",
             "usage": {},
         }

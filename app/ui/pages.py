@@ -41,7 +41,7 @@ from app.services.block_analysis import (
     summarize_risk_label,
 )
 from app.services.bridge_completion import merge_completed_bridge_into_wf2
-from app.services.client_manager import create_client, list_clients
+from app.services.client_manager import create_client, get_client_listing_diagnostics, list_clients
 from app.services.data_loader import (
     load_document_catalog,
     load_smoke_test_results,
@@ -85,6 +85,31 @@ from app.services.wf4 import (
     build_project_presentation_markdown,
     build_wf4_outputs,
 )
+
+
+# ── Cache parsing documents ───────────────────────────────────────────────────
+# @st.cache_data met en cache le résultat par (file_bytes, suffix).
+# Évite de re-parser PDF/DOCX/CSV à chaque rerun Streamlit tant que le fichier
+# n'a pas changé. TTL 30 min — suffisant pour une session de travail normale.
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_parse_pdf(file_bytes: bytes) -> tuple:
+    return parse_pdf_bytes(file_bytes)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_parse_docx(file_bytes: bytes) -> tuple:
+    return parse_docx_bytes(file_bytes)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_parse_excel(file_bytes: bytes) -> dict:
+    return parse_excel_bytes(file_bytes)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_parse_csv(file_bytes: bytes):
+    return parse_csv_bytes(file_bytes)
 
 
 # ── Session state helpers ─────────────────────────────────────────────────────
@@ -1787,7 +1812,7 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
         return
 
     if suffix == ".csv":
-        dataframe = parse_csv_bytes(file_bytes)
+        dataframe = _cached_parse_csv(file_bytes)
         with st.expander("Voir les metadonnees detectees", expanded=False):
             render_metadata(extract_table_metadata(dataframe, uploaded_file.name))
         with st.expander("Voir l'apercu tabulaire", expanded=False):
@@ -1799,7 +1824,7 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
         return
 
     if suffix == ".xlsx":
-        workbook = parse_excel_bytes(file_bytes)
+        workbook = _cached_parse_excel(file_bytes)
         sheet_names = list(workbook.keys())
         business_sheets, informative_sheets = filter_business_sheets(workbook)
         displayed_sheets = business_sheets if business_sheets else workbook
@@ -1842,7 +1867,7 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
         return
 
     if suffix == ".pdf":
-        pdf_text, page_count, text_page_count, pdf_error = parse_pdf_bytes(file_bytes)
+        pdf_text, page_count, text_page_count, pdf_error = _cached_parse_pdf(file_bytes)
 
         if pdf_error:
             st.error(f"Lecture PDF impossible : {pdf_error}")
@@ -1865,7 +1890,7 @@ def process_uploaded_file(uploaded_file, category_label: str, file_index: int) -
         return
 
     if suffix == ".docx":
-        text_content, markdown_content, paragraph_count = parse_docx_bytes(file_bytes)
+        text_content, markdown_content, paragraph_count = _cached_parse_docx(file_bytes)
 
         if not text_content:
             st.warning("Le document DOCX a ete charge, mais aucun texte exploitable n'a ete trouve.")
@@ -2093,8 +2118,24 @@ def render_upload() -> None:
     selected_client_id: str | None = None
     if persist_supabase:
         st.markdown("#### Client a associer a ce dossier")
+        client_diag = get_client_listing_diagnostics()
         existing_clients = list_clients()
         client_options = {c.label(): c.id for c in existing_clients}
+        client_source = str(client_diag.get("source", "")).strip()
+        client_status = str(client_diag.get("status", "")).strip()
+
+        if client_source == "cache":
+            st.warning(
+                "Supabase n'est pas joignable pour la liste des clients. "
+                "L'application affiche donc le dernier cache local disponible."
+            )
+        elif client_status == "owner_id_mismatch":
+            st.info(
+                "Des clients existent bien dans Supabase, mais pas sous l'`owner_id` actuel. "
+                "La liste affiche donc temporairement tous les clients visibles."
+            )
+        elif client_status and client_status not in {"ok", "empty"} and client_source == "supabase_error":
+            st.warning(f"Lecture Supabase clients en echec : `{client_status}`")
 
         col_c1, col_c2 = st.columns([2, 1])
         with col_c1:
