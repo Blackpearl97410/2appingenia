@@ -455,6 +455,8 @@ def call_deepseek_message(
 
     request_max_tokens = max_tokens or settings.max_tokens
     resolved_model, thinking_type = _normalize_deepseek_model(settings.active_model)
+    # Ajuste le timeout selon le mode : thinking peut dépasser 3 min, non-thinking ~60-120s
+    request_timeout = 420.0 if thinking_type == "enabled" else 150.0
     request_kwargs: dict[str, object] = {
         "model": resolved_model,
         "messages": [
@@ -462,7 +464,7 @@ def call_deepseek_message(
             {"role": "user", "content": user_prompt},
         ],
         "max_tokens": request_max_tokens,
-        "timeout": 35.0,
+        "timeout": request_timeout,
         "extra_body": {"thinking": {"type": thinking_type}},
     }
     if thinking_type == "enabled":

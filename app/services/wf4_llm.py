@@ -729,13 +729,30 @@ def get_section_guidance(section_type: str) -> list[str]:
     return list(config.get("guidance", []))
 
 
-def _resolve_wf4a_provider_override(provider_override: str | None) -> str | None:
+def _resolve_wf4a_overrides(provider_override: str | None) -> tuple[str | None, str | None]:
+    """Retourne (provider_override, model_override) optimisés pour WF4A.
+
+    WF4A = structuration JSON de données déjà extraites.
+    Pas besoin de raisonnement profond → on évite le mode thinking DeepSeek
+    qui ajoute 3-4 min de réflexion pour aucun gain sur cette tâche.
+    Priorité : Google (rapide) > DeepSeek non-thinking > provider par défaut.
+    """
     if provider_override:
-        return provider_override
+        # Respect du provider explicite, mais on désactive quand même le thinking DeepSeek
+        if provider_override == "deepseek":
+            return "deepseek", "deepseek-v4-pro-non-thinking"
+        return provider_override, None
+
     google_settings = load_llm_settings(provider_override="google")
     if google_settings.is_configured:
-        return "google"
-    return None
+        return "google", None
+
+    # Provider actif = DeepSeek avec thinking → force non-thinking
+    active_settings = load_llm_settings()
+    if active_settings.provider == "deepseek":
+        return "deepseek", "deepseek-v4-pro-non-thinking"
+
+    return None, None
 
 
 def wf4b_has_dedicated_agent() -> bool:
@@ -750,13 +767,15 @@ def request_wf4a_llm_payload(
     provider_override: str | None = None,
     model_override: str | None = None,
 ) -> dict[str, object]:
-    wf4a_provider_override = _resolve_wf4a_provider_override(provider_override)
+    wf4a_provider_override, wf4a_model_override = _resolve_wf4a_overrides(provider_override)
+    # model_override explicite prime sur la résolution automatique non-thinking
+    effective_model_override = model_override or wf4a_model_override
     llm_result = call_llm_message(
         WF4A_SYSTEM_PROMPT,
         _build_wf4_payload(wf2a_structured, wf2b_structured, wf3_analysis),
         max_tokens=8500,
         provider_override=wf4a_provider_override,
-        model_override=model_override,
+        model_override=effective_model_override,
     )
     if not llm_result.get("ok"):
         return {
@@ -778,7 +797,7 @@ def request_wf4a_llm_payload(
         repair_result = repair_json_response_with_llm(
             str(llm_result.get("text", "")),
             provider_override=wf4a_provider_override,
-            model_override=model_override,
+            model_override=effective_model_override,
         )
         if repair_result.get("ok") and isinstance(repair_result.get("payload"), dict):
             parsed_payload = repair_result["payload"]
@@ -803,7 +822,7 @@ def request_wf4a_llm_payload(
             retry_prompt,
             max_tokens=9500,
             provider_override=wf4a_provider_override,
-            model_override=model_override,
+            model_override=effective_model_override,
         )
         if retry_result.get("ok"):
             retry_payload, retry_error = parse_json_response(str(retry_result.get("text", "")))
@@ -812,7 +831,7 @@ def request_wf4a_llm_payload(
                 repair_result = repair_json_response_with_llm(
                     str(retry_result.get("text", "")),
                     provider_override=wf4a_provider_override,
-                    model_override=model_override,
+                    model_override=effective_model_override,
                 )
                 if repair_result.get("ok") and isinstance(repair_result.get("payload"), dict):
                     retry_payload = repair_result["payload"]
@@ -957,7 +976,8 @@ def request_wf4a_section_payload(
     provider_override: str | None = None,
     model_override: str | None = None,
 ) -> dict[str, object]:
-    wf4a_provider_override = _resolve_wf4a_provider_override(provider_override)
+    wf4a_provider_override, wf4a_model_override = _resolve_wf4a_overrides(provider_override)
+    effective_model_override = model_override or wf4a_model_override
     payload = _build_wf4_payload_dict(wf2a_structured, wf2b_structured, wf3_analysis)
     payload["section_cible"] = section_payload
 
@@ -966,7 +986,7 @@ def request_wf4a_section_payload(
         json.dumps(payload, ensure_ascii=False, indent=2),
         max_tokens=3200,
         provider_override=wf4a_provider_override,
-        model_override=model_override,
+        model_override=effective_model_override,
     )
     if not llm_result.get("ok"):
         return {
@@ -984,7 +1004,7 @@ def request_wf4a_section_payload(
         repair_result = repair_json_response_with_llm(
             str(llm_result.get("text", "")),
             provider_override=wf4a_provider_override,
-            model_override=model_override,
+            model_override=effective_model_override,
         )
         if repair_result.get("ok") and isinstance(repair_result.get("payload"), dict):
             parsed_payload = repair_result["payload"]
@@ -1010,7 +1030,7 @@ def request_wf4a_section_payload(
             json.dumps(retry_payload, ensure_ascii=False, indent=2),
             max_tokens=3600,
             provider_override=wf4a_provider_override,
-            model_override=model_override,
+            model_override=effective_model_override,
         )
         if retry_result.get("ok"):
             retry_parsed_payload, retry_parse_error = parse_json_response(str(retry_result.get("text", "")))
@@ -1018,7 +1038,7 @@ def request_wf4a_section_payload(
                 repair_result = repair_json_response_with_llm(
                     str(retry_result.get("text", "")),
                     provider_override=wf4a_provider_override,
-                    model_override=model_override,
+                    model_override=effective_model_override,
                 )
                 if repair_result.get("ok") and isinstance(repair_result.get("payload"), dict):
                     retry_parsed_payload = repair_result["payload"]
