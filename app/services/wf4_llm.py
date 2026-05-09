@@ -293,12 +293,14 @@ Contraintes / garde-fous
 - Ne pas inventer de montants.
 - Utiliser `A_COMPLETER` si le montant n’est pas connu.
 - Toujours séparer `charges` et `produits`.
-- Utiliser des intitulés compréhensibles et exploitables.
+- RÈGLE ABSOLUE SUR LES LIBELLÉS : chaque ligne doit avoir un `poste` unique et spécifique. N’utilise JAMAIS le nom de la section (ex. "Frais de personnel") comme libellé de poste. Chaque poste doit décrire un élément précis : "Coordinateur de projet (0,5 ETP)", "Intervenants artistiques (3 jours)", "Location salle de répétition", etc. Des libellés génériques répétés ("Frais de personnel" × 3) sont une erreur grave.
+- RÈGLE SUR LES COMMENTAIRES : le champ `commentaire` doit contenir une note utile sur la ligne (justification du montant, contrainte du financeur, source). Il ne doit JAMAIS contenir "Poste parent : ...", "Catégorie : ...", ni reprendre le nom de la section.
+- Utiliser `section` pour regrouper les postes par grande catégorie budgétaire (ex. "Charges de personnel", "Frais généraux", "Investissements", "Subventions", "Autofinancement").
 - Si l’appel impose un cofinancement ou un plafond, le signaler.
 - Si le budget semble incomplet, le dire explicitement.
 - Raisonne en interne, mais ne montre pas le raisonnement.
 - Produis une vraie trame exploitable, pas seulement 2 ou 3 lignes symboliques.
-- Si l'appel ou les sources laissent entendre un fonctionnement classique, propose au minimum 6 lignes de charges et 4 lignes de produits.
+- Si l’appel ou les sources laissent entendre un fonctionnement classique, propose au minimum 6 lignes de charges et 4 lignes de produits.
 - Réponds uniquement avec du JSON brut.
 
 Format de sortie attendu
@@ -307,22 +309,21 @@ Retourne uniquement un JSON valide :
   "document_type": "budget_projet",
   "titre_document": "Budget previsionnel du projet",
   "budget_requis": true,
-  "colonnes": ["poste", "categorie", "montant", "statut", "source", "commentaire"],
   "charges": [
     {
-      "poste": "string",
-      "categorie": "charge",
-      "montant": "string",
+      "section": "Charges de personnel",
+      "poste": "Coordinateur de projet (0,5 ETP sur 12 mois)",
+      "montant_previsionnel": "18000",
       "statut": "confirme|a_completer|a_confirmer",
       "source": "string",
-      "commentaire": "string"
+      "commentaire": "Note utile sur ce poste (justification, contrainte, source) — jamais le nom de la section"
     }
   ],
   "produits": [
     {
-      "poste": "string",
-      "categorie": "produit",
-      "montant": "string",
+      "section": "Subventions publiques",
+      "poste": "Subvention DRAC (demandée)",
+      "montant_previsionnel": "string",
       "statut": "confirme|a_completer|a_confirmer",
       "source": "string",
       "commentaire": "string"
@@ -397,22 +398,21 @@ Retourne uniquement un JSON valide :
   "required": true,
   "niveau_certitude": "haut|moyen|bas",
   "justification_requirement": "string",
-  "colonnes": ["poste", "categorie", "montant", "statut", "source", "commentaire"],
   "charges": [
     {
-      "poste": "string",
-      "categorie": "charge_structure",
-      "montant": "string",
+      "section": "Charges de personnel",
+      "poste": "Libelle specifique et unique (ex: Directeur artistique 1 ETP)",
+      "montant_previsionnel": "string",
       "statut": "confirme|a_completer|a_confirmer",
       "source": "string",
-      "commentaire": "string"
+      "commentaire": "Note utile — jamais le nom de la section"
     }
   ],
   "produits": [
     {
-      "poste": "string",
-      "categorie": "produit_structure",
-      "montant": "string",
+      "section": "Subventions",
+      "poste": "Libelle specifique et unique (ex: Subvention Region - fonctionnement)",
+      "montant_previsionnel": "string",
       "statut": "confirme|a_completer|a_confirmer",
       "source": "string",
       "commentaire": "string"

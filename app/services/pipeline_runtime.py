@@ -638,8 +638,18 @@ def _normalize_budget_rows(items: object) -> list[dict[str, object]]:
             or str(item.get("cout_total", "")).strip()
             or "A_COMPLETER"
         )
+        def _clean_budget_comment(raw: str) -> str:
+            """Supprime les artefacts d'hallucination de type 'Poste parent : ...'."""
+            import re as _re
+            cleaned = _re.sub(
+                r"(?i)^(poste\s+parent|cat[eé]gorie|section)\s*:\s*[^\|]*\|?\s*",
+                "",
+                raw.strip(),
+            ).strip().rstrip("|").strip()
+            return cleaned
+
         commentaire_parts = [
-            str(item.get("commentaire", "")).strip(),
+            _clean_budget_comment(str(item.get("commentaire", ""))),
             str(item.get("description", "")).strip(),
             str(item.get("detail", "")).strip(),
             str(item.get("details", "")).strip(),
